@@ -3,18 +3,25 @@ import json
 import sqlite3
 import asyncio
 import aiohttp
+from aiohttp import TCPConnector
 import google.generativeai as genai
 from flask import Flask, render_template, request, jsonify, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
 from dotenv import load_dotenv
 import requests
+import urllib3
 from datetime import datetime
 import logging
+import time
 from typing import Dict, List, Optional
+
+# Suppress only the single InsecureRequestWarning from urllib3 needed.
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Load environment variables
 load_dotenv()
+
 
 app = Flask(__name__, static_folder='../frontend', template_folder='../frontend')
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'default_secret_key')
@@ -27,12 +34,15 @@ logger = logging.getLogger(__name__)
 
 # Configure Gemini AI
 genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
-primary_model = genai.GenerativeModel(os.getenv('GEMINI_PRIMARY_MODEL', 'gemini-2.0-flash-exp'))
-fallback_model = genai.GenerativeModel(os.getenv('GEMINI_FALLBACK_MODEL', 'gemini-1.5-flash'))
+primary_model = genai.GenerativeModel(os.getenv('GEMINI_PRIMARY_MODEL', 'gemini-2.5-flash'))
+fallback_model = genai.GenerativeModel(os.getenv('GEMINI_FALLBACK_MODEL', 'gemini-2.0-flash'))
 
 # API Configuration
-MOEGOE_API_URL = os.getenv('MOEGOE_API_URL', 'http://localhost:23456')
+NIJIVOICE_API_KEY = os.getenv('NIJIVOICE_API_KEY')
 ASSEMBLYAI_API_KEY = os.getenv('ASSEMBLYAI_API_KEY')
+
+# グローバル変数でボイスアクターのキャッシュを持つ
+VOICE_ACTORS_CACHE = []
 
 # データベースパスを現在のディレクトリからの相対パスで設定
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -282,28 +292,116 @@ class AIConversationManager:
 class TTSManager:
     """音声合成システムの管理クラス"""
     
+    BASE_URL = "https://api.nijivoice.com/api/platform/v1"
+    
     @staticmethod
-    async def synthesize_speech(text: str, speaker_id: int = 0) -> Optional[bytes]:
-        """MoeGoe APIで音声合成"""
-        try:
-            payload = {
-                'text': text,
-                'speaker_id': speaker_id,
-                'noise_scale': 0.667,
-                'noise_scale_w': 0.8,
-                'length_scale': 1.0
-            }
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.post(f"{MOEGOE_API_URL}/voice", json=payload) as response:
-                    if response.status == 200:
-                        return await response.read()
-                    else:
-                        logger.error(f"TTS API error: {response.status}")
-                        return None
+    def get_valid_voice_actor_id() -> Optional[str]:
+        """有効なVoice Actor IDを取得"""
+        global VOICE_ACTORS_CACHE
         
+        # キャッシュから最初の有効なIDを取得
+        if VOICE_ACTORS_CACHE:
+            return VOICE_ACTORS_CACHE[0]['id']
+        
+        # キャッシュがない場合、APIから取得を試行
+        if not NIJIVOICE_API_KEY:
+            logger.error("NIJIVOICE_API_KEY is not set.")
+            return None
+            
+        headers = {
+            "x-api-key": NIJIVOICE_API_KEY,
+            "accept": "application/json"
+        }
+        url = f"{TTSManager.BASE_URL}/voice-actors"
+        
+        try:
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            
+            data = response.json()
+            if "voiceActors" in data and data["voiceActors"]:
+                VOICE_ACTORS_CACHE = data["voiceActors"]
+                return data["voiceActors"][0]['id']
         except Exception as e:
-            logger.error(f"TTS synthesis error: {e}")
+            logger.error(f"Failed to get voice actors: {e}")
+        
+        return None
+    
+    @staticmethod
+    def synthesize_speech(text: str, voice_actor_id: str = None) -> Optional[str]:
+        """にじボイス APIで音声合成し、音声ファイルのURLを返す"""
+        if not NIJIVOICE_API_KEY:
+            logger.error("NIJIVOICE_API_KEY is not set.")
+            return None
+        
+        # Voice Actor IDが指定されていない場合は取得
+        if not voice_actor_id:
+            voice_actor_id = TTSManager.get_valid_voice_actor_id()
+            if not voice_actor_id:
+                logger.error("No valid voice actor ID available")
+                return None
+            
+        headers = {
+            "x-api-key": NIJIVOICE_API_KEY,
+            "Content-Type": "application/json"
+        }
+        
+        # APIドキュメントに基づいて正しいパラメータ名を使用
+        payload = {
+            "script": text,
+            "speed": "1.0",
+            "format": "mp3"
+        }
+        
+        url = f"{TTSManager.BASE_URL}/voice-actors/{voice_actor_id}/generate-voice"
+        
+        try:
+            logger.info(f"Sending request to: {url}")
+            logger.info(f"Payload: {payload}")
+            
+            response = requests.post(url, headers=headers, json=payload)
+            
+            # レスポンスの詳細をログに記録
+            logger.info(f"Response status: {response.status_code}")
+            logger.info(f"Response headers: {response.headers}")
+            
+            if response.status_code == 404:
+                logger.error(f"Voice actor ID not found: {voice_actor_id}")
+                return None
+            
+            response.raise_for_status()
+            
+            response_json = response.json()
+            logger.info(f"Response JSON: {response_json}")
+            
+            # レスポンスの構造に応じて適切なキーを使用
+            # NijiVoice APIの実際のレスポンス構造に基づく
+            audio_url = None
+            
+            # ネストされた構造をチェック
+            if 'generatedVoice' in response_json:
+                generated_voice = response_json['generatedVoice']
+                audio_url = generated_voice.get('audioFileUrl') or generated_voice.get('audioFileDownloadUrl')
+            
+            # フラットな構造もチェック（フォールバック）
+            if not audio_url:
+                audio_url = response_json.get("audioFileUrl") or response_json.get("url") or response_json.get("audio_url")
+            
+            if not audio_url:
+                logger.error(f"No audio URL found in response: {response_json}")
+                return None
+                
+            logger.info(f"Successfully got audio URL: {audio_url}")
+            return audio_url
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"NijiVoice API error: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                logger.error(f"Response status: {e.response.status_code}")
+                logger.error(f"Response text: {e.response.text}")
+            return None
+        except Exception as e:
+            logger.error(f"NijiVoice synthesis error: {e}")
             return None
 
 class STTManager:
@@ -311,56 +409,54 @@ class STTManager:
     
     @staticmethod
     async def transcribe_audio(audio_data: bytes) -> Optional[str]:
-        """AssemblyAI APIで音声認識"""
-        try:
-            headers = {
-                'authorization': ASSEMBLYAI_API_KEY,
-                'content-type': 'application/json'
-            }
-            
-            # 音声データをアップロード
-            upload_response = requests.post(
-                'https://api.assemblyai.com/v2/upload',
-                headers={'authorization': ASSEMBLYAI_API_KEY},
-                data=audio_data
-            )
-            
-            if upload_response.status_code != 200:
-                return None
-            
-            audio_url = upload_response.json()['upload_url']
-            
-            # 転写リクエスト
-            transcript_request = {
-                'audio_url': audio_url,
-                'language_code': 'ja'
-            }
-            
-            transcript_response = requests.post(
-                'https://api.assemblyai.com/v2/transcript',
-                headers=headers,
-                json=transcript_request
-            )
-            
-            if transcript_response.status_code != 200:
-                return None
-            
-            transcript_id = transcript_response.json()['id']
-            
-            # 結果ポーリング
-            while True:
-                result = requests.get(
-                    f'https://api.assemblyai.com/v2/transcript/{transcript_id}',
-                    headers=headers
-                )
-                
-                if result.json()['status'] == 'completed':
-                    return result.json()['text']
-                elif result.json()['status'] == 'error':
-                    return None
-                
-                await asyncio.sleep(3)
+        """AssemblyAI APIで音声認識 (aiohttp版)"""
+        upload_url = 'https://api.assemblyai.com/v2/upload'
+        transcript_url = 'https://api.assemblyai.com/v2/transcript'
         
+        headers = {
+            'authorization': ASSEMBLYAI_API_KEY,
+        }
+
+        try:
+            connector = TCPConnector(ssl=False)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                # 1. 音声データをアップロード
+                async with session.post(upload_url, headers=headers, data=audio_data) as response:
+                    if response.status != 200:
+                        logger.error(f"AssemblyAI upload failed: {response.status}")
+                        return None
+                    upload_response_json = await response.json()
+                    audio_url = upload_response_json['upload_url']
+
+                # 2. 転写リクエスト
+                transcript_request = {'audio_url': audio_url, 'language_code': 'ja'}
+                async with session.post(transcript_url, headers=headers, json=transcript_request) as response:
+                    if response.status != 200:
+                        logger.error(f"AssemblyAI transcription request failed: {response.status}")
+                        return None
+                    transcript_response_json = await response.json()
+                    transcript_id = transcript_response_json['id']
+
+                # 3. 結果ポーリング
+                polling_endpoint = f"{transcript_url}/{transcript_id}"
+                while True:
+                    async with session.get(polling_endpoint, headers=headers) as response:
+                        if response.status != 200:
+                            logger.error(f"AssemblyAI polling failed: {response.status}")
+                            return None
+                        
+                        result_json = await response.json()
+                        status = result_json['status']
+
+                        if status == 'completed':
+                            return result_json['text']
+                        elif status == 'error':
+                            logger.error(f"AssemblyAI transcription error: {result_json.get('error')}")
+                            return None
+                        
+                        # 次のポーリングまで待機
+                        await asyncio.sleep(3)
+
         except Exception as e:
             logger.error(f"STT error: {e}")
             return None
@@ -391,6 +487,48 @@ def serve_js(filename):
     """JavaScriptファイルを提供"""
     return send_from_directory('../frontend/js', filename)
 
+
+@app.route('/api/voice-actors')
+def get_voice_actors():
+    """にじボイスのキャラクター一覧を取得し、キャッシュする"""
+    global VOICE_ACTORS_CACHE
+    if not NIJIVOICE_API_KEY:
+        return jsonify({"error": "NijiVoice API key not configured"}), 500
+
+    headers = {
+        "x-api-key": NIJIVOICE_API_KEY,
+        "accept": "application/json"
+    }
+    url = f"{TTSManager.BASE_URL}/voice-actors"
+    
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        
+        data = response.json()
+        # 取得したデータをキャッシュに保存
+        if "voiceActors" in data and data["voiceActors"]:
+            VOICE_ACTORS_CACHE = data["voiceActors"]
+            logger.info(f"Successfully cached {len(VOICE_ACTORS_CACHE)} voice actors.")
+        
+        return jsonify(data)
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to get voice actors from NijiVoice API: {e}")
+        # エラーレスポンスをより詳細に返す
+        error_details = {"error": "Failed to fetch voice actors from external API."}
+        if e.response is not None:
+            error_details["status_code"] = e.response.status_code
+            try:
+                error_details["details"] = e.response.json()
+            except ValueError:
+                error_details["details"] = e.response.text
+        return jsonify(error_details), 502
+    except Exception as e:
+        logger.error(f"Exception in get_voice_actors: {e}")
+        return jsonify({"error": "An internal error occurred"}), 500
+
+
 @socketio.on('connect')
 def handle_connect():
     """WebSocket接続時の処理"""
@@ -412,27 +550,24 @@ def handle_message(data):
         if not message.strip():
             return
         
-        # AI応答生成（非同期処理）
+        # AI応答生成
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        
         response = loop.run_until_complete(
             ai_manager.generate_response(session_id, message)
         )
-        
-        # 音声合成
-        audio_data = loop.run_until_complete(
-            tts_manager.synthesize_speech(response['text'])
-        )
-        
         loop.close()
+
+        # 音声合成
+        voice_actor_id = data.get('voice_actor_id')
+        audio_url = tts_manager.synthesize_speech(response['text'], voice_actor_id=voice_actor_id)
         
         # レスポンス送信
         emit('message_response', {
             'text': response['text'],
             'emotion': response['emotion'],
             'user_emotion': response['user_emotion'],
-            'audio_data': audio_data.hex() if audio_data else None,
+            'audio_url': audio_url,
             'timestamp': datetime.now().isoformat()
         })
         
@@ -450,29 +585,23 @@ def handle_audio(data):
         if not audio_data:
             return
         
+        # 非同期処理の実行
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
-        # 音声認識
-        transcribed_text = loop.run_until_complete(
-            stt_manager.transcribe_audio(audio_data)
-        )
+        transcribed_text = loop.run_until_complete(stt_manager.transcribe_audio(audio_data))
         
         if not transcribed_text:
             emit('error', {'message': '音声の認識に失敗しました。'})
+            loop.close()
             return
         
-        # AI応答生成
-        response = loop.run_until_complete(
-            ai_manager.generate_response(session_id, transcribed_text)
-        )
-        
-        # 音声合成
-        response_audio = loop.run_until_complete(
-            tts_manager.synthesize_speech(response['text'])
-        )
-        
+        response = loop.run_until_complete(ai_manager.generate_response(session_id, transcribed_text))
         loop.close()
+
+        # 音声合成
+        voice_actor_id = data.get('voice_actor_id')
+        audio_url = tts_manager.synthesize_speech(response['text'], voice_actor_id=voice_actor_id)
         
         # レスポンス送信
         emit('audio_response', {
@@ -480,7 +609,7 @@ def handle_audio(data):
             'response_text': response['text'],
             'emotion': response['emotion'],
             'user_emotion': response['user_emotion'],
-            'audio_data': response_audio.hex() if response_audio else None,
+            'audio_url': audio_url,
             'timestamp': datetime.now().isoformat()
         })
         

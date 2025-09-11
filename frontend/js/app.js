@@ -51,6 +51,7 @@ class AIWifeApp {
         this.settings = {
             character: 'avatar.vrm',
             animation: 'animation.vrma',
+            voiceActorId: null, // ★ 初期値をnullに変更
             volume: 0.7,
             voiceSpeed: 1.0,
             personality: 'friendly',
@@ -70,6 +71,7 @@ class AIWifeApp {
             await this.init3DScene();
             await this.loadCharacter();
             this.loadSettings();
+            this.populateVoiceActors(); // ボイス選択肢を生成
             this.startRenderLoop();
             
             console.log('AI Wife App initialized successfully');
@@ -117,6 +119,10 @@ class AIWifeApp {
         document.getElementById('animationSelect').addEventListener('change', (e) => {
             this.settings.animation = e.target.value;
             this.loadAnimation();
+        });
+
+        document.getElementById('voiceActorSelect').addEventListener('change', (e) => {
+            this.settings.voiceActorId = e.target.value;
         });
         
         document.getElementById('volumeSlider').addEventListener('input', (e) => {
@@ -393,7 +399,8 @@ class AIWifeApp {
         
         this.socket.emit('send_message', {
             session_id: this.sessionId,
-            message: message
+            message: message,
+            voice_actor_id: this.settings.voiceActorId
         });
     }
     
@@ -401,6 +408,7 @@ class AIWifeApp {
      * メッセージレスポンス処理
      */
     handleMessageResponse(data) {
+        console.log('[Debug] Received message response:', data); // ★ デバッグログ追加
         this.hideLoading();
         
         this.addMessageToChat('assistant', data.text);
@@ -411,8 +419,8 @@ class AIWifeApp {
         }
         
         // 音声再生
-        if (data.audio_data) {
-            this.playAudio(data.audio_data);
+        if (data.audio_url) {
+            this.playAudio(data.audio_url);
         }
     }
     
@@ -420,6 +428,7 @@ class AIWifeApp {
      * 音声レスポンス処理
      */
     handleAudioResponse(data) {
+        console.log('[Debug] Received audio response:', data); // ★ デバッグログ追加
         this.hideLoading();
         
         // 認識されたテキストを表示
@@ -436,8 +445,8 @@ class AIWifeApp {
         }
         
         // 音声再生
-        if (data.audio_data) {
-            this.playAudio(data.audio_data);
+        if (data.audio_url) {
+            this.playAudio(data.audio_url);
         }
     }
     
@@ -543,7 +552,8 @@ class AIWifeApp {
             
             this.socket.emit('send_audio', {
                 session_id: this.sessionId,
-                audio_data: audioData.map(b => b.toString(16).padStart(2, '0')).join('')
+                audio_data: audioData.map(b => b.toString(16).padStart(2, '0')).join(''),
+                voice_actor_id: this.settings.voiceActorId
             });
             
         } catch (error) {
@@ -556,29 +566,71 @@ class AIWifeApp {
     /**
      * 音声再生
      */
-    playAudio(audioDataHex) {
+    playAudio(audioUrl) {
+        console.log('[Debug] playAudio called with URL:', audioUrl); // ★ デバッグログ追加
         try {
-            const audioBytes = new Uint8Array(
-                audioDataHex.match(/.{1,2}/g).map(byte => parseInt(byte, 16))
-            );
-            
-            const audioBlob = new Blob([audioBytes], { type: 'audio/wav' });
-            const audioUrl = URL.createObjectURL(audioBlob);
-            
+            if (!audioUrl) {
+                console.log('[Debug] No audio URL provided. Skipping playback.'); // ★ デバッグログ追加
+                return;
+            }
+
             const audio = new Audio(audioUrl);
+            console.log('[Debug] Created Audio object:', audio); // ★ デバッグログ追加
+
             audio.volume = this.settings.volume;
             audio.playbackRate = this.settings.voiceSpeed;
             
+            console.log('[Debug] Attempting to play audio...'); // ★ デバッグログ追加
             audio.play().catch(error => {
                 console.error('Failed to play audio:', error);
+                this.showError('音声の再生に失敗しました。');
             });
-            
-            audio.onended = () => {
-                URL.revokeObjectURL(audioUrl);
-            };
             
         } catch (error) {
             console.error('Failed to play audio:', error);
+            this.showError('音声の再生中にエラーが発生しました。');
+        }
+    }
+    
+    /**
+     * にじボイスのキャラクター一覧を読み込んでUIに反映
+     */
+    async populateVoiceActors() {
+        try {
+            const response = await fetch('/api/voice-actors');
+            if (!response.ok) {
+                throw new Error(`API request failed with status ${response.status}`);
+            }
+            const data = await response.json();
+            const selectElement = document.getElementById('voiceActorSelect');
+            
+            selectElement.innerHTML = '';
+
+            if (data.voiceActors && data.voiceActors.length > 0) {
+                // ★★★★★ ここからが重要 ★★★★★
+                // 1. デフォルトのボイスIDを、リストの最初の有効なIDに設定する
+                if (!this.settings.voiceActorId) {
+                    this.settings.voiceActorId = data.voiceActors[0].id;
+                    console.log(`[Debug] Default voice actor ID set to: ${this.settings.voiceActorId}`);
+                }
+                // ★★★★★ ここまで ★★★★★
+
+                // Populate new options
+                data.voiceActors.forEach(actor => {
+                    const option = document.createElement('option');
+                    option.value = actor.id;
+                    option.textContent = `${actor.name} (${actor.gender}, ${actor.age}歳)`;
+                    if (actor.id === this.settings.voiceActorId) {
+                        option.selected = true;
+                    }
+                    selectElement.appendChild(option);
+                });
+            } else {
+                 this.showError('利用可能なボイスが見つかりませんでした。');
+            }
+        } catch (error) {
+            console.error('Failed to populate voice actors:', error);
+            this.showError('ボイス一覧の取得に失敗しました');
         }
     }
     
