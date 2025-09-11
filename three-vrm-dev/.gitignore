@@ -1,0 +1,8 @@
+/docs/
+/node_modules
+/packages/*/coverage
+/packages/*/node_modules
+/packages/*/docs
+/packages/*/lib
+/packages/*/types
+/tmp

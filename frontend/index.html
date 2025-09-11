@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8">
+    <title>AI Wife - 3D Character Interaction</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <link rel="stylesheet" href="css/style.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <!-- ハンバーガーメニュー -->
+    <div class="hamburger-menu" id="hamburgerMenu">
+        <i class="fas fa-bars"></i>
+    </div>
+
+    <!-- サイドバー -->
+    <div class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <h3>AI Wife Settings</h3>
+            <button class="close-sidebar" id="closeSidebar">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        
+        <div class="sidebar-content">
+            <div class="setting-group">
+                <h4>キャラクター設定</h4>
+                <div class="setting-item">
+                    <label for="characterSelect">キャラクター選択:</label>
+                    <select id="characterSelect">
+                        <option value="avatar.vrm">デフォルト</option>
+                        <option value="new_model.vrm">カスタム</option>
+                    </select>
+                </div>
+                
+                <div class="setting-item">
+                    <label for="animationSelect">アニメーション:</label>
+                    <select id="animationSelect">
+                        <option value="animation.vrma">基本</option>
+                        <option value="taisou.vrma">体操</option>
+                        <option value="utu.vrma">うつ</option>
+                        <option value="zenshinwomiseru.vrma">全身を見せる</option>
+                    </select>
+                </div>
+            </div>
+            
+            <div class="setting-group">
+                <h4>音声設定</h4>
+                <div class="setting-item">
+                    <label for="volumeSlider">音量:</label>
+                    <input type="range" id="volumeSlider" min="0" max="100" value="70">
+                    <span id="volumeValue">70%</span>
+                </div>
+                
+                <div class="setting-item">
+                    <label for="voiceSpeed">話速:</label>
+                    <input type="range" id="voiceSpeed" min="0.5" max="2.0" step="0.1" value="1.0">
+                    <span id="voiceSpeedValue">1.0x</span>
+                </div>
+            </div>
+            
+            <div class="setting-group">
+                <h4>AI設定</h4>
+                <div class="setting-item">
+                    <label for="personalitySelect">性格:</label>
+                    <select id="personalitySelect">
+                        <option value="friendly">親しみやすい</option>
+                        <option value="shy">内気</option>
+                        <option value="energetic">元気</option>
+                        <option value="calm">落ち着いた</option>
+                    </select>
+                </div>
+                
+                <div class="setting-item">
+                    <label for="memoryToggle">記憶機能:</label>
+                    <input type="checkbox" id="memoryToggle" checked>
+                </div>
+            </div>
+            
+            <div class="setting-group">
+                <button class="reset-button" id="resetMemory">
+                    <i class="fas fa-trash"></i> 記憶をリセット
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- メインコンテンツ -->
+    <div class="main-content" id="mainContent">
+        <!-- 3Dキャラクター表示領域 -->
+        <div class="character-container" id="characterContainer">
+            <!-- Three.jsでレンダリングされる -->
+        </div>
+        
+        <!-- ステータス表示 -->
+        <div class="status-bar">
+            <div class="connection-status" id="connectionStatus">
+                <i class="fas fa-circle text-gray"></i>
+                <span>接続中...</span>
+            </div>
+            <div class="character-mood" id="characterMood">
+                <i class="fas fa-smile"></i>
+                <span>普通</span>
+            </div>
+        </div>
+        
+        <!-- チャット UI -->
+        <div class="chat-container" id="chatContainer">
+            <div class="chat-messages" id="chatMessages">
+                <div class="message assistant-message">
+                    <div class="message-avatar">
+                        <i class="fas fa-robot"></i>
+                    </div>
+                    <div class="message-content">
+                        <div class="message-text">こんにちは！私はあなたのAI Wifeです。何かお話ししましょう！</div>
+                        <div class="message-timestamp">今</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="chat-input-container">
+                <div class="input-controls">
+                    <button class="voice-button" id="voiceButton" title="音声入力">
+                        <i class="fas fa-microphone"></i>
+                    </button>
+                    
+                    <div class="text-input-wrapper">
+                        <input type="text" id="textInput" placeholder="メッセージを入力..." maxlength="500">
+                        <button class="send-button" id="sendButton" title="送信">
+                            <i class="fas fa-paper-plane"></i>
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="voice-recording" id="voiceRecording" style="display: none;">
+                    <div class="recording-indicator">
+                        <div class="recording-pulse"></div>
+                        <span>録音中...</span>
+                    </div>
+                    <button class="stop-recording" id="stopRecording">
+                        <i class="fas fa-stop"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ローディングオーバーレイ -->
+    <div class="loading-overlay" id="loadingOverlay" style="display: none;">
+        <div class="loading-spinner">
+            <div class="spinner"></div>
+            <p>AI が考えています...</p>
+        </div>
+    </div>
+
+    <!-- エラートースト -->
+    <div class="toast error-toast" id="errorToast" style="display: none;">
+        <i class="fas fa-exclamation-triangle"></i>
+        <span id="errorMessage">エラーが発生しました</span>
+        <button class="toast-close" onclick="hideErrorToast()">
+            <i class="fas fa-times"></i>
+        </button>
+    </div>
+
+    <!-- Scripts -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.177.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.177.0/examples/jsm/",
+                "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3/lib/three-vrm.module.js",
+                "@pixiv/three-vrm-animation": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm-animation@3/lib/three-vrm-animation.module.js"
+            }
+        }
+    </script>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <script type="module" src="js/app.js"></script>
+</body>
+</html>
