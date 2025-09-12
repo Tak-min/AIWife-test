@@ -55,7 +55,8 @@ class AIWifeApp {
             volume: 0.7,
             voiceSpeed: 1.0,
             personality: 'friendly',
-            memoryEnabled: true
+            memoryEnabled: true,
+            background: 'none' // 背景設定を追加
         };
         
         this.init();
@@ -69,6 +70,7 @@ class AIWifeApp {
             this.setupEventListeners();
             this.initWebSocket();
             await this.init3DScene();
+            await this.loadBackground();
             await this.loadCharacter();
             this.loadSettings();
             this.populateVoiceActors(); // ボイス選択肢を生成
@@ -123,6 +125,11 @@ class AIWifeApp {
 
         document.getElementById('voiceActorSelect').addEventListener('change', (e) => {
             this.settings.voiceActorId = e.target.value;
+        });
+        
+        document.getElementById('backgroundSelect').addEventListener('change', (e) => {
+            this.settings.background = e.target.value;
+            this.loadBackground();
         });
         
         document.getElementById('volumeSlider').addEventListener('input', (e) => {
@@ -223,10 +230,10 @@ class AIWifeApp {
         this.scene.background = null; // 透明背景
         
         // ライティング
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        const ambientLight = new THREE.AmbientLight(0xffffff, 1.0);
         this.scene.add(ambientLight);
         
-        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 3.0);
         directionalLight.position.set(1.0, 1.0, 1.0);
         directionalLight.castShadow = true;
         directionalLight.shadow.mapSize.width = 2048;
@@ -237,6 +244,32 @@ class AIWifeApp {
         const fillLight = new THREE.DirectionalLight(0xffffff, 0.3);
         fillLight.position.set(-1.0, 0.5, -1.0);
         this.scene.add(fillLight);
+    }
+    
+    /**
+     * 背景の読み込み
+     */
+    async loadBackground() {
+        try {
+            if (this.settings.background === 'none') {
+                this.scene.background = null;
+                return;
+            }
+            
+            const loader = new THREE.TextureLoader();
+            const texture = await loader.loadAsync(`./backgrounds/${this.settings.background}`);
+            
+            // テクスチャの設定
+            texture.mapping = THREE.EquirectangularReflectionMapping;
+            texture.encoding = THREE.sRGBEncoding;
+            
+            this.scene.background = texture;
+            console.log('Background loaded:', this.settings.background);
+            
+        } catch (error) {
+            console.error('Failed to load background:', error);
+            this.scene.background = null;
+        }
     }
     
     /**
@@ -770,6 +803,7 @@ class AIWifeApp {
             // UI要素に反映
             document.getElementById('characterSelect').value = this.settings.character;
             document.getElementById('animationSelect').value = this.settings.animation;
+            document.getElementById('backgroundSelect').value = this.settings.background;
             document.getElementById('volumeSlider').value = Math.round(this.settings.volume * 100);
             document.getElementById('volumeValue').textContent = Math.round(this.settings.volume * 100) + '%';
             document.getElementById('voiceSpeed').value = this.settings.voiceSpeed;

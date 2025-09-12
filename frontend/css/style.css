@@ -226,13 +226,14 @@ body {
     overflow: hidden;
 }
 
-.chat-messages {
+.chat-messages::-webkit-scrollbar {
     max-height: 300px;
     overflow-y: auto;
     padding: 20px;
     display: flex;
     flex-direction: column;
     gap: 15px;
+    display: none;
 }
 
 .message {
