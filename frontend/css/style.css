@@ -7,7 +7,7 @@
 
 body {
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: transparent; /* 透明背景に変更 */
     color: #333;
     height: 100vh;
     overflow: hidden;
@@ -211,226 +211,6 @@ body {
 .text-red { color: #f44336; }
 .text-gray { color: #666; }
 
-/* チャットコンテナ */
-.chat-container {
-    position: absolute;
-    bottom: 20px;
-    left: 20px;
-    right: 20px;
-    max-width: 800px;
-    margin: 0 auto;
-    background: rgba(255, 255, 255, 0.95);
-    backdrop-filter: blur(10px);
-    border-radius: 15px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
-    overflow: hidden;
-}
-
-.chat-messages::-webkit-scrollbar {
-    max-height: 300px;
-    overflow-y: auto;
-    padding: 20px;
-    display: flex;
-    flex-direction: column;
-    gap: 15px;
-    display: none;
-}
-
-.message {
-    display: flex;
-    gap: 12px;
-    align-items: flex-start;
-}
-
-.message.user-message {
-    flex-direction: row-reverse;
-}
-
-.message-avatar {
-    width: 40px;
-    height: 40px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 18px;
-    flex-shrink: 0;
-}
-
-.assistant-message .message-avatar {
-    background: #667eea;
-    color: white;
-}
-
-.user-message .message-avatar {
-    background: #4caf50;
-    color: white;
-}
-
-.message-content {
-    max-width: 70%;
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-}
-
-.user-message .message-content {
-    align-items: flex-end;
-}
-
-.message-text {
-    background: #f5f5f5;
-    padding: 12px 16px;
-    border-radius: 15px;
-    line-height: 1.4;
-    word-wrap: break-word;
-}
-
-.user-message .message-text {
-    background: #4caf50;
-    color: white;
-}
-
-.assistant-message .message-text {
-    background: #667eea;
-    color: white;
-}
-
-.message-timestamp {
-    font-size: 12px;
-    color: #666;
-    padding: 0 5px;
-}
-
-/* チャット入力エリア */
-.chat-input-container {
-    padding: 20px;
-    border-top: 1px solid #e0e0e0;
-}
-
-.input-controls {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-}
-
-.voice-button {
-    width: 50px;
-    height: 50px;
-    border-radius: 50%;
-    border: none;
-    background: #667eea;
-    color: white;
-    cursor: pointer;
-    transition: all 0.3s ease;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 18px;
-}
-
-.voice-button:hover {
-    background: #5a6fd8;
-    transform: scale(1.1);
-}
-
-.voice-button.recording {
-    background: #f44336;
-    animation: pulse 1s infinite;
-}
-
-@keyframes pulse {
-    0% { transform: scale(1); }
-    50% { transform: scale(1.1); }
-    100% { transform: scale(1); }
-}
-
-.text-input-wrapper {
-    flex: 1;
-    display: flex;
-    gap: 10px;
-}
-
-#textInput {
-    flex: 1;
-    padding: 12px 16px;
-    border: 1px solid #ddd;
-    border-radius: 25px;
-    font-size: 16px;
-    outline: none;
-    transition: border-color 0.3s ease;
-}
-
-#textInput:focus {
-    border-color: #667eea;
-}
-
-.send-button {
-    width: 50px;
-    height: 50px;
-    border-radius: 50%;
-    border: none;
-    background: #4caf50;
-    color: white;
-    cursor: pointer;
-    transition: all 0.3s ease;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 16px;
-}
-
-.send-button:hover {
-    background: #43a047;
-    transform: scale(1.1);
-}
-
-.send-button:disabled {
-    background: #ccc;
-    cursor: not-allowed;
-    transform: none;
-}
-
-/* 音声録音UI */
-.voice-recording {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 15px;
-    background: #f44336;
-    color: white;
-    border-radius: 10px;
-    margin-top: 10px;
-}
-
-.recording-indicator {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-}
-
-.recording-pulse {
-    width: 12px;
-    height: 12px;
-    background: white;
-    border-radius: 50%;
-    animation: pulse 1s infinite;
-}
-
-.stop-recording {
-    background: white;
-    color: #f44336;
-    border: none;
-    border-radius: 50%;
-    width: 40px;
-    height: 40px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 14px;
-}
-
 /* ローディングオーバーレイ */
 .loading-overlay {
     position: fixed;
@@ -516,21 +296,6 @@ body {
         right: -100%;
     }
     
-    .chat-container {
-        left: 10px;
-        right: 10px;
-        bottom: 10px;
-    }
-    
-    .chat-messages {
-        max-height: 200px;
-        padding: 15px;
-    }
-    
-    .message-content {
-        max-width: 85%;
-    }
-    
     .status-bar {
         top: 10px;
         left: 10px;
@@ -586,5 +351,360 @@ body {
         animation-duration: 0.01ms !important;
         animation-iteration-count: 1 !important;
         transition-duration: 0.01ms !important;
+    }
+}
+
+/* =====================================
+   3D UI System - Glassmorphism Panel
+   ===================================== */
+
+.glass-panel {
+    width: 240px;
+    height: 150px;
+    background: 
+        linear-gradient(135deg, 
+            rgba(0, 255, 255, 0.1),
+            rgba(0, 200, 255, 0.05),
+            rgba(0, 150, 255, 0.02)
+        ),
+        linear-gradient(45deg, transparent 25%, rgba(0, 255, 255, 0.03) 25%, rgba(0, 255, 255, 0.03) 50%, transparent 50%, transparent 75%, rgba(0, 255, 255, 0.03) 75%);
+    background-size: 100% 100%, 6px 6px;
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    border: 1px solid rgba(0, 255, 255, 0.3);
+    border-radius: 8px;
+    box-shadow: 
+        0 6px 24px rgba(0, 255, 255, 0.2),
+        inset 0 1px 0 rgba(0, 255, 255, 0.3),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.1),
+        0 0 20px rgba(0, 255, 255, 0.1);
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    cursor: pointer;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    font-family: 'Courier New', monospace;
+    user-select: none;
+    position: relative;
+    overflow: hidden;
+    animation: hologram-pulse 4s infinite ease-in-out;
+}
+
+.glass-panel::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, 
+        transparent, 
+        rgba(0, 255, 255, 0.2), 
+        transparent
+    );
+    transition: left 0.5s ease;
+}
+
+.glass-panel:hover {
+    background: 
+        linear-gradient(135deg, 
+            rgba(0, 255, 255, 0.15),
+            rgba(0, 200, 255, 0.08),
+            rgba(0, 150, 255, 0.03)
+        ),
+        linear-gradient(45deg, transparent 25%, rgba(0, 255, 255, 0.05) 25%, rgba(0, 255, 255, 0.05) 50%, transparent 50%, transparent 75%, rgba(0, 255, 255, 0.05) 75%);
+    background-size: 100% 100%, 6px 6px;
+    border-color: rgba(0, 255, 255, 0.5);
+    box-shadow: 
+        0 12px 40px rgba(0, 255, 255, 0.3),
+        inset 0 1px 0 rgba(0, 255, 255, 0.4),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.1),
+        0 0 30px rgba(0, 255, 255, 0.2);
+    transform: translateY(-2px);
+}
+
+.glass-panel:hover::before {
+    left: 100%;
+}
+
+.glass-panel:active {
+    transform: translateY(0px) scale(0.98);
+    box-shadow: 
+        0 4px 16px rgba(0, 255, 255, 0.4),
+        inset 0 1px 0 rgba(0, 255, 255, 0.3);
+}
+
+.glass-panel-icon {
+    font-size: 0.8rem;
+    color: rgba(0, 255, 255, 0.9);
+    margin-bottom: 2px;
+    text-shadow: 
+        0 0 3px rgba(0, 255, 255, 0.8),
+        0 0 6px rgba(0, 255, 255, 0.4),
+        0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.glass-panel-text {
+    color: rgba(0, 255, 255, 0.9);
+    font-size: 1.5rem;
+    font-weight: 500;
+    text-align: center;
+    text-shadow: 
+        0 0 2px rgba(0, 255, 255, 0.6),
+        0 0 4px rgba(0, 255, 255, 0.3),
+        0 1px 4px rgba(0, 0, 0, 0.5);
+    line-height: 1.3;
+}
+
+.glass-panel-subtext {
+    color: rgba(0, 255, 255, 0.7);
+    font-size: 1rem;
+    margin-top: 2px;
+    text-shadow: 
+        0 0 2px rgba(0, 255, 255, 0.4),
+        0 1px 2px rgba(0, 0, 0, 0.7);
+}
+
+/* =====================================
+   AR Speech Bubble System
+   ===================================== */
+
+.ar-speech-bubble {
+    position: fixed;
+    background: 
+        linear-gradient(135deg, 
+            rgba(0, 255, 255, 0.15),
+            rgba(0, 200, 255, 0.1),
+            rgba(0, 150, 255, 0.05)
+        ),
+        linear-gradient(45deg, transparent 25%, rgba(0, 255, 255, 0.02) 25%, rgba(0, 255, 255, 0.02) 50%, transparent 50%, transparent 75%, rgba(0, 255, 255, 0.02) 75%);
+    background-size: 100% 100%, 8px 8px;
+    backdrop-filter: blur(12px) saturate(120%);
+    -webkit-backdrop-filter: blur(12px) saturate(120%);
+    border: 1px solid rgba(0, 255, 255, 0.4);
+    border-radius: 10px;
+    padding: 15px 15px;
+    max-width: 600px;
+    min-width: 400px;
+    color: #00ffff;
+    font-family: 'Courier New', monospace;
+    font-size: 1.0rem;
+    line-height: 1.2;
+    font-weight: 400;
+    text-shadow: 
+        0 0 3px rgba(0, 255, 255, 0.8),
+        0 0 6px rgba(0, 255, 255, 0.4),
+        0 1px 3px rgba(0, 0, 0, 0.5);
+    box-shadow: 
+        0 6px 24px rgba(0, 255, 255, 0.2),
+        inset 0 1px 0 rgba(0, 255, 255, 0.3),
+        0 0 0 1px rgba(0, 255, 255, 0.1),
+        0 0 20px rgba(0, 255, 255, 0.1);
+    z-index: 1000;
+    pointer-events: none;
+    opacity: 0;
+    transform: scale(0.8) translateY(10px);
+    transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+    animation: hologram-flicker 3s infinite ease-in-out;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+    box-shadow: 
+        0 6px 24px rgba(0, 0, 0, 0.3),
+        inset 0 1px 0 rgba(255, 255, 255, 0.1),
+        0 0 0 1px rgba(255, 255, 255, 0.05);
+    z-index: 1000;
+    pointer-events: none;
+    opacity: 0;
+    transform: scale(0.8) translateY(10px);
+    transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.ar-speech-bubble.show {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+}
+
+.ar-speech-bubble::before {
+    content: '';
+    position: absolute;
+    bottom: -4px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 4px solid rgba(0, 255, 255, 0.6);
+    filter: drop-shadow(0 0 3px rgba(0, 255, 255, 0.5));
+}
+
+.ar-speech-bubble::after {
+    content: '';
+    position: absolute;
+    top: -1px;
+    left: -1px;
+    right: -1px;
+    bottom: -1px;
+.ar-speech-bubble::after {
+    content: '';
+    position: absolute;
+    top: -1px;
+    left: -1px;
+    right: -1px;
+    bottom: -1px;
+    background: linear-gradient(135deg, 
+        rgba(0, 255, 255, 0.2),
+        transparent 30%,
+        rgba(0, 255, 255, 0.1) 70%,
+        rgba(0, 255, 255, 0.05)
+    );
+    border-radius: 8px;
+    z-index: -1;
+    animation: scan-line 2s infinite linear;
+}
+
+.ar-speech-bubble-text {
+    position: relative;
+    z-index: 1;
+}
+
+.typing-indicator {
+    display: inline-block;
+    width: 2px;
+    height: 8px;
+    background: rgba(0, 255, 255, 0.9);
+    margin-left: 1px;
+    animation: blink 1s infinite;
+    box-shadow: 0 0 3px rgba(0, 255, 255, 0.6);
+}
+
+@keyframes blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0; }
+}
+
+/* 近未来的なアニメーション */
+@keyframes hologram-flicker {
+    0%, 100% { 
+        opacity: 1;
+        filter: brightness(1);
+    }
+    2%, 4% { 
+        opacity: 0.9;
+        filter: brightness(1.1);
+    }
+    6%, 8% { 
+        opacity: 1;
+        filter: brightness(0.9);
+    }
+    96%, 98% { 
+        opacity: 0.95;
+        filter: brightness(1.05);
+    }
+}
+
+@keyframes scan-line {
+    0% { 
+        transform: translateY(-100%) scaleY(0);
+        opacity: 0;
+    }
+    10% { 
+        transform: translateY(-50%) scaleY(1);
+        opacity: 1;
+    }
+    90% { 
+        transform: translateY(150%) scaleY(1);
+        opacity: 1;
+    }
+    100% { 
+        transform: translateY(200%) scaleY(0);
+        opacity: 0;
+    }
+}
+
+@keyframes hologram-pulse {
+    0%, 100% { 
+        opacity: 1;
+        box-shadow: 
+            0 6px 24px rgba(0, 255, 255, 0.2),
+            inset 0 1px 0 rgba(0, 255, 255, 0.3),
+            inset 0 -1px 0 rgba(0, 0, 0, 0.1),
+            0 0 20px rgba(0, 255, 255, 0.1);
+    }
+    50% { 
+        opacity: 0.8;
+        box-shadow: 
+            0 6px 24px rgba(0, 255, 255, 0.3),
+            inset 0 1px 0 rgba(0, 255, 255, 0.4),
+            inset 0 -1px 0 rgba(0, 0, 0, 0.1),
+            0 0 30px rgba(0, 255, 255, 0.15);
+    }
+}
+
+/* =====================================
+   CSS3D Renderer Container
+   ===================================== */
+
+.css3d-container {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 10;
+    background: transparent; /* 明示的に透明背景を設定 */
+}
+
+.css3d-container canvas {
+    pointer-events: auto;
+}
+
+/* =====================================
+   3D UI Mode Styles
+   ===================================== */
+
+.character-container {
+    cursor: crosshair;
+}
+
+/* =====================================
+   Responsive Design for 3D UI
+   ===================================== */
+
+@media (max-width: 768px) {
+    .glass-panel {
+        width: 60px;
+        height: 40px;
+        padding: 4px;
+    }
+    
+    .glass-panel-icon {
+        font-size: 0.6rem;
+    }
+    
+    .glass-panel-text {
+        font-size: 0.3rem;
+    }
+    
+    .ar-speech-bubble {
+        max-width: 80px;
+        font-size: 1rem;
+        padding: 3px 4px;
+    }
+}
+
+@media (max-width: 480px) {
+    .glass-panel {
+        width: 50px;
+        height: 35px;
+        padding: 3px;
+    }
+    
+    .ar-speech-bubble {
+        max-width: 60px;
+        font-size: 0.8rem;
+        padding: 2px 3px;
     }
 }

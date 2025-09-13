@@ -487,6 +487,11 @@ def serve_js(filename):
     """JavaScriptファイルを提供"""
     return send_from_directory('../frontend/js', filename)
 
+@app.route('/backgrounds/<path:filename>')
+def serve_backgrounds(filename):
+    """背景画像ファイルを提供"""
+    return send_from_directory('../frontend/backgrounds', filename)
+
 
 @app.route('/api/voice-actors')
 def get_voice_actors():

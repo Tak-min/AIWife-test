@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js';
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 import { createVRMAnimationClip, VRMAnimationLoaderPlugin, VRMLookAtQuaternionProxy } from '@pixiv/three-vrm-animation';
 
@@ -20,12 +21,21 @@ class AIWifeApp {
         this.scene = null;
         this.camera = null;
         this.renderer = null;
+        this.css3dRenderer = null;
+        this.css3dScene = null;
         this.controls = null;
         this.vrm = null;
         this.mixer = null;
         this.clock = new THREE.Clock();
         this.animations = new Map();
         this.currentEmotion = 'neutral';
+        this.floor = null; // 足場
+        
+        // 3D UI System
+        this.glassPanel = null;
+        this.speechBubble = null;
+        this.isTyping = false;
+        this.bubbleActive = false;
         
         // UI要素
         this.elements = {
@@ -34,12 +44,6 @@ class AIWifeApp {
             closeSidebar: document.getElementById('closeSidebar'),
             mainContent: document.getElementById('mainContent'),
             characterContainer: document.getElementById('characterContainer'),
-            chatMessages: document.getElementById('chatMessages'),
-            textInput: document.getElementById('textInput'),
-            sendButton: document.getElementById('sendButton'),
-            voiceButton: document.getElementById('voiceButton'),
-            voiceRecording: document.getElementById('voiceRecording'),
-            stopRecording: document.getElementById('stopRecording'),
             connectionStatus: document.getElementById('connectionStatus'),
             characterMood: document.getElementById('characterMood'),
             loadingOverlay: document.getElementById('loadingOverlay'),
@@ -56,7 +60,8 @@ class AIWifeApp {
             voiceSpeed: 1.0,
             personality: 'friendly',
             memoryEnabled: true,
-            background: 'none' // 背景設定を追加
+            background: 'sky.jpg', // 背景設定
+            use3DUI: true // 3D UIモードを有効化
         };
         
         this.init();
@@ -99,19 +104,6 @@ class AIWifeApp {
         this.elements.hamburgerMenu.addEventListener('click', () => this.toggleSidebar());
         this.elements.closeSidebar.addEventListener('click', () => this.closeSidebar());
         
-        // チャット機能
-        this.elements.sendButton.addEventListener('click', () => this.sendMessage());
-        this.elements.textInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                this.sendMessage();
-            }
-        });
-        
-        // 音声機能
-        this.elements.voiceButton.addEventListener('click', () => this.toggleVoiceRecording());
-        this.elements.stopRecording.addEventListener('click', () => this.stopVoiceRecording());
-        
         // 設定変更
         document.getElementById('characterSelect').addEventListener('change', (e) => {
             this.settings.character = e.target.value;
@@ -148,6 +140,11 @@ class AIWifeApp {
         
         document.getElementById('memoryToggle').addEventListener('change', (e) => {
             this.settings.memoryEnabled = e.target.checked;
+        });
+        
+        document.getElementById('use3DUIToggle').addEventListener('change', (e) => {
+            this.settings.use3DUI = e.target.checked;
+            this.toggle3DUIMode(e.target.checked);
         });
         
         document.getElementById('resetMemory').addEventListener('click', () => {
@@ -211,11 +208,28 @@ class AIWifeApp {
         this.renderer.setPixelRatio(window.devicePixelRatio);
         this.renderer.shadowMap.enabled = true;
         this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        this.renderer.domElement.style.position = 'absolute';
+        this.renderer.domElement.style.zIndex = '0'; // 背景レイヤー
         this.elements.characterContainer.appendChild(this.renderer.domElement);
+        
+        // CSS3DRenderer for UI elements
+        this.css3dRenderer = new CSS3DRenderer();
+        this.css3dRenderer.setSize(window.innerWidth, window.innerHeight);
+        this.css3dRenderer.domElement.style.position = 'absolute';
+        this.css3dRenderer.domElement.style.top = '0';
+        this.css3dRenderer.domElement.style.left = '0';
+        this.css3dRenderer.domElement.style.pointerEvents = 'none';
+        this.css3dRenderer.domElement.style.background = 'transparent'; // 透明背景に設定
+        this.css3dRenderer.domElement.style.zIndex = '1'; // WebGLRendererより前面に
+        this.css3dRenderer.domElement.className = 'css3d-container';
+        this.elements.characterContainer.appendChild(this.css3dRenderer.domElement);
+        
+        // CSS3D Scene
+        this.css3dScene = new THREE.Scene();
         
         // カメラ
         this.camera = new THREE.PerspectiveCamera(30.0, window.innerWidth / window.innerHeight, 0.1, 20.0);
-        this.camera.position.set(0.0, 1.0, -5.0);
+        this.camera.position.set(0.0, 1.0, -2.0);
         
         // カメラコントロール
         this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -223,6 +237,9 @@ class AIWifeApp {
         this.controls.target.set(0.0, 1.0, 0.0);
         this.controls.enableDamping = true;
         this.controls.dampingFactor = 0.05;
+        this.controls.enableRotate = true; // 回転を無効化
+        this.controls.enableZoom = true; // ズームを無効化
+        this.controls.enablePan = false; // パンを無効化
         this.controls.update();
         
         // シーン
@@ -244,6 +261,254 @@ class AIWifeApp {
         const fillLight = new THREE.DirectionalLight(0xffffff, 0.3);
         fillLight.position.set(-1.0, 0.5, -1.0);
         this.scene.add(fillLight);
+        
+        // 足場（フロア）の作成
+        this.createFloor();
+        
+        // 3D UI System 初期化
+        if (this.settings.use3DUI) {
+            this.init3DUISystem();
+        }
+    }
+    
+    /**
+     * 足場（フロア）の作成
+     */
+    createFloor() {
+        // 大きな平面ジオメトリを作成（x-z平面）
+        const floorGeometry = new THREE.PlaneGeometry(1000, 1000); // 1000x1000の巨大なフロア
+        
+        // 半透明のマテリアル
+        const floorMaterial = new THREE.MeshLambertMaterial({
+            color: 0xffffff,
+            transparent: true,
+            opacity: 1.0, // ほぼ透明
+            side: THREE.DoubleSide
+        });
+        
+        // フロアメッシュを作成
+        this.floor = new THREE.Mesh(floorGeometry, floorMaterial);
+        
+        // 平面をx-z平面に配置（Y軸で-90度回転）
+        this.floor.rotation.x = -Math.PI / 2;
+        this.floor.position.y = 0; // 地面の高さ
+        
+        // 影を受ける設定
+        this.floor.receiveShadow = true;
+        
+        // シーンに追加
+        this.scene.add(this.floor);
+        
+        console.log('Floor created');
+    }
+
+    /**
+     * 3D UIシステムの初期化
+     */
+    init3DUISystem() {
+        // ガラスパネルの作成
+        this.createGlassPanel();
+        
+        // AR吹き出しの作成
+        this.createARSpeechBubble();
+        
+        // 3D UIモードのスタイルを適用
+        document.body.classList.add('ui-3d-mode');
+        
+        console.log('3D UI System initialized');
+    }
+    
+    /**
+     * ガラスパネルの作成
+     */
+    createGlassPanel() {
+        // HTML要素の作成
+        const panelElement = document.createElement('div');
+        panelElement.className = 'glass-panel';
+        panelElement.innerHTML = `
+            <div class="glass-panel-icon">
+                <i class="fas fa-comments"></i>
+            </div>
+            <div class="glass-panel-text">
+                メッセージを送信
+            </div>
+            <div class="glass-panel-subtext">
+                クリックして会話を始める
+            </div>
+        `;
+        
+        // CSS3Dオブジェクトとして3D空間に配置
+        this.glassPanel = new CSS3DObject(panelElement);
+        this.glassPanel.position.set(0.5, 1.0, -0.2); // ユーザーから見て左側に配置
+        this.glassPanel.rotation.y = Math.PI + Math.PI * 0.08; // 左側なので回転を調整
+        this.glassPanel.scale.set(0.002, 0.002, 0.002); // サイズを大幅に縮小
+        this.css3dScene.add(this.glassPanel);
+        
+        // クリックイベントの設定
+        panelElement.style.pointerEvents = 'auto';
+        panelElement.addEventListener('click', (e) => {
+            this.handleGlassPanelClick(e);
+        });
+        
+        // ホバーアニメーション用のアイドル状態
+        this.startGlassPanelAnimation();
+    }
+    
+    /**
+     * AR吹き出しの作成
+     */
+    createARSpeechBubble() {
+        this.speechBubble = document.createElement('div');
+        this.speechBubble.className = 'ar-speech-bubble';
+        this.speechBubble.innerHTML = `
+            <div class="ar-speech-bubble-text"></div>
+        `;
+        document.body.appendChild(this.speechBubble);
+    }
+    
+    /**
+     * ガラスパネルのアイドルアニメーション
+     */
+    startGlassPanelAnimation() {
+        const animatePanel = () => {
+            if (this.glassPanel) {
+                const time = Date.now() * 0.001;
+                this.glassPanel.position.y = 1.0 + Math.sin(time * 0.5) * 0.03; // ユーザーの設定Y=1.0を基準に
+                this.glassPanel.rotation.y = Math.PI + Math.PI * 0.08 + Math.sin(time * 0.3) * 0.015; // ユーザーの回転設定に合わせる
+            }
+            requestAnimationFrame(animatePanel);
+        };
+        animatePanel();
+    }
+    
+    /**
+     * ガラスパネルクリック処理
+     */
+    async handleGlassPanelClick(event) {
+        if (this.isTyping) return;
+        
+        // タッチフィードバック
+        event.target.style.transform = 'scale(0.95)';
+        setTimeout(() => {
+            event.target.style.transform = '';
+        }, 150);
+        
+        // テキスト入力ダイアログを表示
+        const message = prompt('メッセージを入力してください:');
+        if (message && message.trim()) {
+            this.send3DMessage(message.trim());
+        }
+    }
+    
+    /**
+     * 3D UIを使用したメッセージ送信
+     */
+    send3DMessage(message) {
+        console.log('Sending 3D message:', message);
+        this.showLoading();
+        
+        this.socket.emit('send_message', {
+            session_id: this.sessionId,
+            message: message,
+            voice_actor_id: this.settings.voiceActorId
+        });
+    }
+    
+    /**
+     * キャラクターの頭部位置を取得
+     */
+    getCharacterHeadPosition() {
+        if (!this.vrm) return null;
+        
+        // VRMキャラクターの頭部ボーンを取得
+        const headBone = this.vrm.humanoid?.getBoneNode('head');
+        if (!headBone) return null;
+        
+        const headPosition = new THREE.Vector3();
+        headBone.getWorldPosition(headPosition);
+        
+        // 少し上に調整（吹き出し用）
+        headPosition.y += 0.3;
+        
+        return headPosition;
+    }
+    
+    /**
+     * 3D座標をスクリーン座標に変換
+     */
+    worldToScreen(position) {
+        if (!position || !this.camera) return { x: 0, y: 0 };
+        
+        const vector = position.clone();
+        vector.project(this.camera);
+        
+        return {
+            x: (vector.x * 0.5 + 0.5) * window.innerWidth,
+            y: -(vector.y * 0.5 - 0.5) * window.innerHeight
+        };
+    }
+    
+    /**
+     * AR吹き出しを表示
+     */
+    showARSpeechBubble(text) {
+        if (!this.speechBubble) return;
+        
+        const headPosition = this.getCharacterHeadPosition();
+        if (!headPosition) return;
+        
+        const screenPos = this.worldToScreen(headPosition);
+        
+        // 吹き出しの位置を設定
+        this.speechBubble.style.left = `${screenPos.x}px`;
+        this.speechBubble.style.top = `${screenPos.y - 60}px`;
+        this.speechBubble.style.transform = 'translateX(-50%)';
+        
+        // テキストをタイピング効果で表示
+        this.typeText(text);
+    }
+    
+    /**
+     * タイピング効果でテキストを表示
+     */
+    async typeText(text) {
+        if (!this.speechBubble) return;
+        
+        this.isTyping = true;
+        this.bubbleActive = true;
+        
+        const textElement = this.speechBubble.querySelector('.ar-speech-bubble-text');
+        textElement.innerHTML = '<span class="typing-indicator"></span>';
+        
+        // 吹き出しを表示
+        this.speechBubble.classList.add('show');
+        
+        // 少し待ってからタイピング開始
+        await new Promise(resolve => setTimeout(resolve, 300));
+        
+        // タイピング効果
+        textElement.innerHTML = '';
+        for (let i = 0; i <= text.length; i++) {
+            textElement.textContent = text.substring(0, i);
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        
+        this.isTyping = false;
+        
+        // 5秒後に自動で非表示
+        setTimeout(() => {
+            this.hideARSpeechBubble();
+        }, 5000);
+    }
+    
+    /**
+     * AR吹き出しを隠す
+     */
+    hideARSpeechBubble() {
+        if (this.speechBubble) {
+            this.speechBubble.classList.remove('show');
+            this.bubbleActive = false;
+        }
     }
     
     /**
@@ -257,7 +522,7 @@ class AIWifeApp {
             }
             
             const loader = new THREE.TextureLoader();
-            const texture = await loader.loadAsync(`./backgrounds/${this.settings.background}`);
+            const texture = await loader.loadAsync(`/backgrounds/${this.settings.background}`);
             
             // テクスチャの設定
             texture.mapping = THREE.EquirectangularReflectionMapping;
@@ -414,37 +679,66 @@ class AIWifeApp {
             if (this.renderer && this.scene && this.camera) {
                 this.renderer.render(this.scene, this.camera);
             }
+            
+            // CSS3D UIのレンダリング
+            if (this.css3dRenderer && this.css3dScene && this.camera) {
+                this.css3dRenderer.render(this.css3dScene, this.camera);
+            }
+            
+            // AR吹き出しの位置更新
+            if (this.settings.use3DUI && this.bubbleActive) {
+                this.updateARSpeechBubblePosition();
+            }
         };
         
         animate();
     }
     
     /**
-     * メッセージ送信
+     * AR吹き出しの位置更新
      */
-    sendMessage() {
-        const message = this.elements.textInput.value.trim();
-        if (!message) return;
+    updateARSpeechBubblePosition() {
+        if (!this.speechBubble || !this.bubbleActive) return;
         
-        this.addMessageToChat('user', message);
-        this.elements.textInput.value = '';
-        this.showLoading();
+        const headPosition = this.getCharacterHeadPosition();
+        if (!headPosition) return;
         
-        this.socket.emit('send_message', {
-            session_id: this.sessionId,
-            message: message,
-            voice_actor_id: this.settings.voiceActorId
-        });
+        const screenPos = this.worldToScreen(headPosition);
+        
+        // 画面内に収まるように調整
+        const bubbleWidth = 100;
+        const bubbleHeight = 30;
+        const padding = 10;
+        
+        let x = screenPos.x + 30; // 左側に少しオフセット
+        let y = screenPos.y - 20;
+        
+        // 画面外にはみ出さないよう調整
+        if (x - bubbleWidth/2 < padding) {
+            x = bubbleWidth/2 + padding;
+        } else if (x + bubbleWidth/2 > window.innerWidth - padding) {
+            x = window.innerWidth - bubbleWidth/2 - padding;
+        }
+        
+        if (y < padding) {
+            y = padding;
+        } else if (y > window.innerHeight - bubbleHeight - padding) {
+            y = window.innerHeight - bubbleHeight - padding;
+        }
+        
+        this.speechBubble.style.left = `${x}px`;
+        this.speechBubble.style.top = `${y}px`;
     }
     
     /**
-     * メッセージレスポンス処理
+     * メッセージレスポンス処理（3D UI専用）
      */
     handleMessageResponse(data) {
-        console.log('[Debug] Received message response:', data); // ★ デバッグログ追加
+        console.log('[Debug] Received message response:', data);
         this.hideLoading();
         
-        this.addMessageToChat('assistant', data.text);
+        // AR吹き出しで表示
+        this.showARSpeechBubble(data.text);
         
         // 感情に基づくアニメーション
         if (data.emotion) {
@@ -464,13 +758,13 @@ class AIWifeApp {
         console.log('[Debug] Received audio response:', data); // ★ デバッグログ追加
         this.hideLoading();
         
-        // 認識されたテキストを表示
+        // 認識テキストをコンソールログ出力
         if (data.transcribed_text) {
-            this.addMessageToChat('user', data.transcribed_text);
+            console.log('Transcribed:', data.transcribed_text);
         }
         
-        // AI応答を表示
-        this.addMessageToChat('assistant', data.response_text);
+        // AR吹き出しで応答を表示
+        this.showARSpeechBubble(data.response_text);
         
         // 感情に基づくアニメーション
         if (data.emotion) {
@@ -757,6 +1051,27 @@ class AIWifeApp {
             this.camera.updateProjectionMatrix();
             this.renderer.setSize(window.innerWidth, window.innerHeight);
         }
+        
+        // CSS3DRendererのリサイズ
+        if (this.css3dRenderer) {
+            this.css3dRenderer.setSize(window.innerWidth, window.innerHeight);
+        }
+    }
+    
+    /**
+     * 3D UIモードの切り替え
+     */
+    toggle3DUIMode(enabled) {
+        if (enabled) {
+            document.body.classList.add('ui-3d-mode');
+            if (!this.glassPanel) {
+                this.init3DUISystem();
+            }
+        } else {
+            document.body.classList.remove('ui-3d-mode');
+            this.hideARSpeechBubble();
+        }
+        console.log('3D UI Mode:', enabled ? 'Enabled' : 'Disabled');
     }
     
     /**
@@ -810,6 +1125,7 @@ class AIWifeApp {
             document.getElementById('voiceSpeedValue').textContent = this.settings.voiceSpeed + 'x';
             document.getElementById('personalitySelect').value = this.settings.personality;
             document.getElementById('memoryToggle').checked = this.settings.memoryEnabled;
+            document.getElementById('use3DUIToggle').checked = this.settings.use3DUI;
         }
     }
     

@@ -92,6 +92,11 @@
                     <label for="memoryToggle">記憶機能:</label>
                     <input type="checkbox" id="memoryToggle" checked>
                 </div>
+                
+                <div class="setting-item">
+                    <label for="use3DUIToggle">3D UIモード:</label>
+                    <input type="checkbox" id="use3DUIToggle" checked>
+                </div>
             </div>
             
             <div class="setting-group">
@@ -118,46 +123,6 @@
             <div class="character-mood" id="characterMood">
                 <i class="fas fa-smile"></i>
                 <span>普通</span>
-            </div>
-        </div>
-        
-        <!-- チャット UI -->
-        <div class="chat-container" id="chatContainer">
-            <div class="chat-messages" id="chatMessages">
-                <div class="message assistant-message">
-                    <div class="message-avatar">
-                        <i class="fas fa-robot"></i>
-                    </div>
-                    <div class="message-content">
-                        <div class="message-text">こんにちは！私はあなたのAI Wifeです。何かお話ししましょう！</div>
-                        <div class="message-timestamp">今</div>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="chat-input-container">
-                <div class="input-controls">
-                    <button class="voice-button" id="voiceButton" title="音声入力">
-                        <i class="fas fa-microphone"></i>
-                    </button>
-                    
-                    <div class="text-input-wrapper">
-                        <input type="text" id="textInput" placeholder="メッセージを入力..." maxlength="500">
-                        <button class="send-button" id="sendButton" title="送信">
-                            <i class="fas fa-paper-plane"></i>
-                        </button>
-                    </div>
-                </div>
-                
-                <div class="voice-recording" id="voiceRecording" style="display: none;">
-                    <div class="recording-indicator">
-                        <div class="recording-pulse"></div>
-                        <span>録音中...</span>
-                    </div>
-                    <button class="stop-recording" id="stopRecording">
-                        <i class="fas fa-stop"></i>
-                    </button>
-                </div>
             </div>
         </div>
     </div>
