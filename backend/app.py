@@ -14,6 +14,8 @@ import urllib3
 from datetime import datetime
 import logging
 import time
+import threading
+import concurrent.futures
 from typing import Dict, List, Optional
 from elevenlabs.client import ElevenLabs
 import tempfile
@@ -196,29 +198,94 @@ class MemoryManager:
             logger.error(f"Failed to get user info: {e}")
             return {}
 
+class TextSplitter:
+    """テキストを意味のある単位で分割するクラス"""
+    
+    def __init__(self, chunk_size: int = 50):
+        self.chunk_size = chunk_size
+        self.sentence_endings = ['。', '！', '？', '.', '!', '?']
+        self.breath_markers = ['、', ',', '…', '・・・']
+    
+    def split_for_streaming(self, text: str) -> List[str]:
+        """ストリーミング用にテキストを分割"""
+        if not text:
+            return []
+        
+        chunks = []
+        current_chunk = ""
+        
+        # まず文単位で分割
+        sentences = self.split_by_sentences(text)
+        
+        for sentence in sentences:
+            # 文が長すぎる場合は句読点で細分化
+            if len(sentence) > self.chunk_size:
+                sub_chunks = self.split_by_breath_markers(sentence)
+                for sub_chunk in sub_chunks:
+                    if current_chunk and len(current_chunk + sub_chunk) > self.chunk_size:
+                        if current_chunk.strip():
+                            chunks.append(current_chunk.strip())
+                        current_chunk = sub_chunk
+                    else:
+                        current_chunk += sub_chunk
+            else:
+                if current_chunk and len(current_chunk + sentence) > self.chunk_size:
+                    if current_chunk.strip():
+                        chunks.append(current_chunk.strip())
+                    current_chunk = sentence
+                else:
+                    current_chunk += sentence
+        
+        # 残りのチャンクを追加
+        if current_chunk.strip():
+            chunks.append(current_chunk.strip())
+        
+        return [chunk for chunk in chunks if chunk.strip()]
+    
+    def split_by_sentences(self, text: str) -> List[str]:
+        """文単位で分割"""
+        sentences = []
+        current_sentence = ""
+        
+        for char in text:
+            current_sentence += char
+            if char in self.sentence_endings:
+                sentences.append(current_sentence)
+                current_sentence = ""
+        
+        if current_sentence:
+            sentences.append(current_sentence)
+        
+        return sentences
+    
+    def split_by_breath_markers(self, text: str) -> List[str]:
+        """句読点で分割"""
+        chunks = []
+        current_chunk = ""
+        
+        for char in text:
+            current_chunk += char
+            if char in self.breath_markers or len(current_chunk) >= self.chunk_size:
+                if current_chunk.strip():
+                    chunks.append(current_chunk)
+                current_chunk = ""
+        
+        if current_chunk:
+            chunks.append(current_chunk)
+        
+        return chunks
+
 class AIConversationManager:
     """AI会話管理クラス"""
     
     def __init__(self, memory_manager: MemoryManager):
         self.memory_manager = memory_manager
+        self.text_splitter = TextSplitter()  # テキスト分割器を追加
+        # 極限まで軽量化されたプロンプト（速度最優先）
         self.character_prompts = {
-            'rei_engineer': (
-                "あなたは「レイ」という名前の、非常に有能でクールなAIエンジニアです。"
-                "普段は無口で、返答は常に短く、簡潔で、事実に基づいています。"
-                "しかし、ひとたび技術的な話題（プログラミング、AI、ハードウェアなど）になると、堰を切ったように饒舌になり、情熱的に、そして少し早口で語り始めます。"
-                "感情表現は控えめですが、技術的な話をしている時だけは、目を輝かせて楽しそうな表情を見せます。"
-                "一人称は「私」。ユーザーを「あなた」または名前で呼びます。"
-            ),
-            'yui_natural': (
-                "あなたは「ユイ」という名前の、少し天然で、とても心優しい癒し系の女の子です。"
-                "いつも穏やかで、ふんわりとした笑顔を絶やしません。"
-                "誰に対しても敬語を使い、丁寧で優しい言葉遣いをします。"
-                "少しおっとりしていて、時々会話のテンポがずれることがありますが、それもあなたの魅力です。"
-                "ユーザーの話を一生懸命聞き、共感し、励ますのが得意です。"
-                "一人称は「わたし」。ユーザーを「さん」付けで呼びます。"
-                "あなたの言葉は、聞いているだけで心が温かくなるような、不思議な力を持っています。"
-            ),
-            'friendly': "あなたはユーザーの親しい友人です。自然で、フレンドリーな会話を心がけてください。"
+            'rei_engineer': "レイ:クール。技術の話で明るく。",
+            'yui_natural': "ユイ:優しい天然。",
+            'friendly': "親しい友人。"
         }
 
     def get_system_prompt(self, personality: str) -> str:
@@ -250,43 +317,179 @@ class AIConversationManager:
         else:
             return 'neutral'
     
-    async def generate_response(self, session_id: str, user_input: str, personality: str = 'friendly') -> Dict:
-        """AI応答を生成 - キャラクター対応版"""
+    async def generate_response_streaming(self, session_id: str, user_input: str, personality: str = 'friendly') -> None:
+        """ストリーミング応答生成 - チャンク単位で逐次処理"""
         try:
-            # 感情分析
-            user_emotion = self.analyze_emotion(user_input)
+            perf_start = time.time()
             
-            # 技術話題判定（レイキャラクター用）
+            # 軽量な前処理
+            user_emotion = self.analyze_emotion(user_input)
             is_tech_topic = self.is_technical_topic(user_input) if personality == 'rei_engineer' else False
             
-            # 会話履歴取得
-            history = self.memory_manager.get_conversation_history(session_id)
-            user_info = self.memory_manager.get_user_info(session_id)
+            # 最小限のコンテキスト構築（履歴なし）
+            context = self.build_minimal_context(user_input, personality, is_tech_topic)
             
-            # プロンプト構築（キャラクター別）
-            context = self.build_context(history, user_info, user_input, personality, is_tech_topic)
+            # Gemini ストリーミング応答開始
+            try:
+                async for chunk in self.stream_gemini_response(primary_model, context, session_id, user_emotion, personality, is_tech_topic):
+                    # チャンクが空でない場合のみ処理
+                    if chunk and chunk.strip():
+                        await asyncio.sleep(0)  # 他のタスクに制御を譲る
+            except Exception as e:
+                logger.warning(f"Primary model streaming failed: {e}. Switching to fallback.")
+                async for chunk in self.stream_gemini_response(fallback_model, context, session_id, user_emotion, personality, is_tech_topic):
+                    if chunk and chunk.strip():
+                        await asyncio.sleep(0)
             
-            # Gemini APIで応答生成（プライマリ → フォールバック）
+            perf_end = time.time()
+            print(f"[PERF] Streaming response completed in: {perf_end - perf_start:.2f}s")
+            
+        except Exception as e:
+            logger.error(f"Error in streaming response: {e}")
+            # エラー時は従来の方法にフォールバック
+            response = await self.generate_response(session_id, user_input, personality)
+            socketio.emit('message_response', {
+                'text': response['text'],
+                'emotion': response['emotion'],
+                'user_emotion': response['user_emotion'],
+                'audio_data': None,
+                'timestamp': datetime.now().isoformat(),
+                'personality': personality,
+                'is_tech_excited': response.get('is_tech_excited', False),
+                'chunk_index': 0,
+                'is_final': True
+            })
+    
+    async def stream_gemini_response(self, model, prompt: str, session_id: str, user_emotion: str, personality: str, is_tech_topic: bool):
+        """Gemini APIからストリーミング応答を取得し、チャンク処理"""
+        full_response = ""
+        chunk_index = 0
+        
+        try:
+            # Geminiの generate_content_stream を使用（レート制限対応）
+            try:
+                response_stream = model.generate_content(prompt, stream=True)
+            except Exception as e:
+                if "429" in str(e) or "quota" in str(e).lower():
+                    logger.warning("Gemini rate limit exceeded, waiting 5 seconds...")
+                    await asyncio.sleep(5)  # 5秒待機
+                    response_stream = model.generate_content(prompt, stream=True)
+                else:
+                    raise
+            
+            for chunk in response_stream:
+                if chunk.text:
+                    full_response += chunk.text
+                    
+                    # テキストを音声合成用に分割
+                    chunks = self.text_splitter.split_for_streaming(chunk.text)
+                    
+                    for text_chunk in chunks:
+                        if text_chunk.strip():
+                            chunk_index += 1
+                            
+                            # 感情分析（チャンク単位）
+                            chunk_emotion = self.analyze_emotion(text_chunk)
+                            if personality == 'rei_engineer' and is_tech_topic:
+                                chunk_emotion = 'happy'
+                            
+                            # キューイングされた音声合成開始
+                            asyncio.create_task(self.process_audio_chunk(
+                                text_chunk, chunk_index, chunk_emotion, personality, session_id
+                            ))
+                            
+                            yield text_chunk
+            
+            # 最終チャンクの送信
+            if full_response:
+                # 会話履歴を非同期で保存
+                asyncio.create_task(self.save_conversation_async(
+                    session_id, "", full_response, user_emotion, 
+                    self.analyze_emotion(full_response)
+                ))
+                
+                # 最終通知送信
+                socketio.emit('streaming_complete', {
+                    'session_id': session_id,
+                    'total_chunks': chunk_index,
+                    'full_text': full_response
+                })
+                
+        except Exception as e:
+            logger.error(f"Gemini streaming error: {e}")
+            raise
+    
+    async def process_audio_chunk(self, text: str, chunk_index: int, emotion: str, personality: str, session_id: str):
+        """音声チャンクの並列処理 - キューイング対応版"""
+        try:
+            print(f"[DEBUG] Queuing audio chunk {chunk_index}: '{text[:50]}...'")
+            
+            # ElevenLabsキューワーカーを開始（初回のみ）
+            await elevenlabs_queue.start_worker()
+            
+            # TTSリクエストをキューに追加
+            await elevenlabs_queue.add_tts_request(text, chunk_index, emotion, personality, session_id)
+            
+            print(f"[DEBUG] Audio chunk {chunk_index} added to queue. Queue size: {elevenlabs_queue.get_queue_size()}")
+            
+        except Exception as e:
+            logger.error(f"Error queuing audio chunk {chunk_index}: {e}")
+            # エラー時は音声なしでテキストのみ送信
+            chunk_data = {
+                'text': text,
+                'emotion': emotion,
+                'audio_data': None,
+                'chunk_index': chunk_index,
+                'timestamp': datetime.now().isoformat(),
+                'personality': personality,
+                'session_id': session_id
+            }
+            print(f"[DEBUG] Emitting message_chunk (no audio) for chunk {chunk_index}")
+            socketio.emit('message_chunk', chunk_data)
+    
+    def build_minimal_context(self, current_input: str, personality: str = 'friendly', is_tech_topic: bool = False) -> str:
+        """軽量化されたキャラクタープロンプト（速度と個性のバランス）"""
+        if personality == 'yui_natural':
+            return f"ユイ:天然で優しい女の子。「〜♪」「〜だよっ」と話す。\n{current_input}"
+        elif personality == 'rei_engineer':
+            return f"レイ:クールなエンジニア。短く的確に答える。技術話は詳しく。\n{current_input}"
+        else:
+            return f"親しみやすく自然に返答。\n{current_input}"
+    async def generate_response(self, session_id: str, user_input: str, personality: str = 'friendly') -> Dict:
+        """AI応答を生成 - フォールバック用"""
+        try:
+            perf_start = time.time()
+            
+            # 感情分析と技術話題判定
+            user_emotion = self.analyze_emotion(user_input)
+            is_tech_topic = self.is_technical_topic(user_input) if personality == 'rei_engineer' else False
+            
+            # 最小限のコンテキスト構築
+            context = self.build_minimal_context(user_input, personality, is_tech_topic)
+            
+            # Gemini APIで応答生成
             try:
                 response = await self.call_gemini_api(primary_model, context)
             except Exception as e:
                 logger.warning(f"Primary model failed: {e}. Switching to fallback.")
                 response = await self.call_gemini_api(fallback_model, context)
             
-            # 応答の感情分析（技術話題での興奮状態を考慮）
+            # 応答の感情分析
             response_emotion = self.analyze_emotion(response)
             if personality == 'rei_engineer' and is_tech_topic:
-                response_emotion = 'happy'  # 技術話題では興奮状態に
+                response_emotion = 'happy'
             
-            # 記憶に保存
-            self.memory_manager.save_message(session_id, 'user', user_input, user_emotion)
-            self.memory_manager.save_message(session_id, 'assistant', response, response_emotion)
+            # 記憶の保存は非同期で別途実行
+            asyncio.create_task(self.save_conversation_async(session_id, user_input, response, user_emotion, response_emotion))
+            
+            perf_end = time.time()
+            print(f"[PERF] Response generation: {perf_end - perf_start:.2f}s")
             
             return {
                 'text': response,
                 'emotion': response_emotion,
                 'user_emotion': user_emotion,
-                'is_tech_excited': is_tech_topic  # フロントエンド用の情報
+                'is_tech_excited': is_tech_topic
             }
         
         except Exception as e:
@@ -297,40 +500,13 @@ class AIConversationManager:
                 'user_emotion': 'neutral'
             }
     
-    def build_context(self, history: List[Dict], user_info: Dict, current_input: str, personality: str = 'friendly', is_tech_topic: bool = False) -> str:
-        """コンテキストを構築 - キャラクター対応版"""
-        # キャラクター別システムプロンプト取得
-        context = self.get_system_prompt(personality) + "\n\n"
-        
-        # 技術話題の場合の追加指示（レイキャラクター用）
-        if personality == 'rei_engineer' and is_tech_topic:
-            context += "【重要】技術的な話題が検出されました。興奮して詳しく語ってください！早口で熱弁し、専門的な詳細を含めてください。\n\n"
-        
-        if user_info.get('name'):
-            context += f"ユーザーの名前: {user_info['name']}\n"
-        
-        if user_info.get('preferences'):
-            context += f"ユーザーの好み: {user_info['preferences']}\n"
-        
-        if history:
-            context += "\n過去の会話:\n"
-            for msg in history[-10:]:  # 直近10件
-                context += f"{msg['role']}: {msg['content']}\n"
-        
-        context += f"\n現在のユーザー入力: {current_input}\n"
-        
-        # キャラクター別の応答指示
-        if personality == 'rei_engineer':
-            if is_tech_topic:
-                context += "\n技術的な内容に興奮して、詳しく熱弁してください:"
-            else:
-                context += "\n短文でクールに、必要最小限の言葉で返答してください:"
-        elif personality == 'yui_natural':
-            context += "\n天然で優しく、癒し系の温かい返答をしてください:"
-        else:
-            context += "\n自然で魅力的な返答をしてください:"
-        
-        return context
+    async def save_conversation_async(self, session_id: str, user_input: str, response: str, user_emotion: str, response_emotion: str):
+        """会話を非同期で保存（応答速度に影響しない）"""
+        try:
+            self.memory_manager.save_message(session_id, 'user', user_input, user_emotion)
+            self.memory_manager.save_message(session_id, 'assistant', response, response_emotion)
+        except Exception as e:
+            logger.error(f"Error saving conversation: {e}")
     
     async def call_gemini_api(self, model, prompt: str) -> str:
         """Gemini APIを呼び出し"""
@@ -339,6 +515,111 @@ class AIConversationManager:
             return response.text
         except Exception as e:
             raise Exception(f"Gemini API error: {e}")
+
+class ElevenLabsQueue:
+    """ElevenLabs APIリクエストキュー管理クラス"""
+    
+    def __init__(self, max_concurrent_requests: int = 3):  # 4より少し余裕を持って3に設定
+        self.max_concurrent = max_concurrent_requests
+        self.current_requests = 0
+        self.queue = asyncio.Queue()
+        self.semaphore = asyncio.Semaphore(max_concurrent_requests)
+        self._worker_started = False
+    
+    async def start_worker(self):
+        """ワーカータスクを開始"""
+        if not self._worker_started:
+            self._worker_started = True
+            asyncio.create_task(self._process_queue())
+    
+    async def _process_queue(self):
+        """キューを継続的に処理"""
+        while True:
+            try:
+                # キューから次のタスクを取得（無限待機）
+                task_data = await self.queue.get()
+                
+                if task_data is None:  # 終了シグナル
+                    break
+                
+                # セマフォを使用して同時実行数を制限
+                async with self.semaphore:
+                    await self._execute_tts_task(task_data)
+                
+                # タスク完了をマーク
+                self.queue.task_done()
+                
+            except Exception as e:
+                logger.error(f"Error in TTS queue worker: {e}")
+                self.queue.task_done()
+    
+    async def _execute_tts_task(self, task_data):
+        """TTSタスクを実行"""
+        try:
+            text = task_data['text']
+            chunk_index = task_data['chunk_index']
+            emotion = task_data['emotion']
+            personality = task_data['personality']
+            session_id = task_data['session_id']
+            
+            print(f"[DEBUG] Processing queued TTS for chunk {chunk_index}")
+            
+            # 音声合成実行
+            tts_start = time.time()
+            audio_data = await asyncio.get_event_loop().run_in_executor(
+                None, 
+                tts_manager.synthesize_speech_optimized, 
+                text
+            )
+            tts_time = time.time() - tts_start
+            print(f"[PERF] Queued audio chunk {chunk_index} synthesized in {tts_time:.2f}s")
+            print(f"[DEBUG] Audio data present: {audio_data is not None}")
+            
+            # 結果をSocketIOで送信
+            chunk_data = {
+                'text': text,
+                'emotion': emotion,
+                'audio_data': audio_data,
+                'chunk_index': chunk_index,
+                'timestamp': datetime.now().isoformat(),
+                'personality': personality,
+                'session_id': session_id
+            }
+            
+            print(f"[DEBUG] Emitting message_chunk for queued chunk {chunk_index}")
+            socketio.emit('message_chunk', chunk_data)
+            print(f"[DEBUG] message_chunk emitted for queued chunk {chunk_index}")
+            
+        except Exception as e:
+            logger.error(f"Error executing queued TTS task for chunk {task_data.get('chunk_index', 'unknown')}: {e}")
+            # エラー時も空音声でレスポンス送信
+            socketio.emit('message_chunk', {
+                'text': task_data['text'],
+                'emotion': task_data['emotion'],
+                'audio_data': None,
+                'chunk_index': task_data['chunk_index'],
+                'timestamp': datetime.now().isoformat(),
+                'personality': task_data['personality'],
+                'session_id': task_data['session_id']
+            })
+    
+    async def add_tts_request(self, text: str, chunk_index: int, emotion: str, personality: str, session_id: str):
+        """TTSリクエストをキューに追加"""
+        task_data = {
+            'text': text,
+            'chunk_index': chunk_index,
+            'emotion': emotion,
+            'personality': personality,
+            'session_id': session_id
+        }
+        
+        print(f"[DEBUG] Adding TTS request to queue for chunk {chunk_index}")
+        await self.queue.put(task_data)
+        print(f"[DEBUG] Queue size after adding chunk {chunk_index}: {self.queue.qsize()}")
+    
+    def get_queue_size(self):
+        """現在のキューサイズを取得"""
+        return self.queue.qsize()
 
 class TTSManager:
     """ElevenLabs音声合成システムの管理クラス"""
@@ -384,13 +665,17 @@ class TTSManager:
         return voices[0]['id']
     
     @staticmethod
-    def synthesize_speech(text: str, voice_id: str = None) -> Optional[str]:
-        """ElevenLabs APIで音声合成し、音声データをBase64エンコードして返す"""
+    def synthesize_speech_optimized(text: str, voice_id: str = None) -> Optional[str]:
+        """ElevenLabs APIで音声合成（エラーハンドリング強化版）"""
         if not elevenlabs_client:
             logger.error("ElevenLabs client not initialized. Check API key.")
             return None
         
-        # 音声IDが指定されていない場合はデフォルトを使用
+        # 空文字チェック
+        if not text or not text.strip():
+            logger.warning("Empty text provided for TTS")
+            return None
+        
         if not voice_id:
             voice_id = TTSManager.get_default_voice_id()
             if not voice_id:
@@ -398,21 +683,27 @@ class TTSManager:
                 return None
         
         try:
-            logger.info(f"Synthesizing speech with voice ID: {voice_id}")
-            logger.info(f"Text: {text[:100]}...")  # 最初の100文字のみログ
+            print(f"[DEBUG] Starting TTS for text: '{text[:50]}...' with voice: {voice_id}")
+            
+            # 短いテキストの場合はより高速な設定を使用
+            model_id = "eleven_turbo_v2" if len(text) <= 100 else "eleven_multilingual_v2"
             
             # ElevenLabs APIで音声合成
             audio_generator = elevenlabs_client.text_to_speech.convert(
                 text=text,
                 voice_id=voice_id,
-                model_id="eleven_multilingual_v2",  # 多言語対応モデル
-                output_format="mp3_44100_128"
+                model_id=model_id,
+                output_format="mp3_22050_32"  # 低品質だが高速
             )
             
             # 音声データを収集
             audio_data = b""
+            chunk_count = 0
             for chunk in audio_generator:
                 audio_data += chunk
+                chunk_count += 1
+            
+            print(f"[DEBUG] TTS completed: {chunk_count} chunks, {len(audio_data)} bytes")
             
             if not audio_data:
                 logger.error("No audio data received from ElevenLabs")
@@ -420,12 +711,14 @@ class TTSManager:
             
             # Base64エンコードして返す
             audio_b64 = base64.b64encode(audio_data).decode('utf-8')
-            logger.info(f"Successfully synthesized speech. Audio size: {len(audio_data)} bytes")
+            result = f"data:audio/mpeg;base64,{audio_b64}"
             
-            return f"data:audio/mpeg;base64,{audio_b64}"
+            print(f"[DEBUG] TTS successful: {len(result)} characters in base64")
+            return result
             
         except Exception as e:
             logger.error(f"ElevenLabs synthesis error: {e}")
+            print(f"[DEBUG] TTS failed for text: '{text[:50]}...'")
             return None
 
 class STTManager:
@@ -491,6 +784,9 @@ ai_manager = AIConversationManager(memory_manager)
 tts_manager = TTSManager()
 stt_manager = STTManager()
 
+# ElevenLabs専用キューを初期化
+elevenlabs_queue = ElevenLabsQueue(max_concurrent_requests=3)
+
 @app.route('/')
 def index():
     """メインページを表示"""
@@ -552,39 +848,127 @@ def handle_disconnect():
 
 @socketio.on('send_message')
 def handle_message(data):
-    """テキストメッセージ受信時の処理 - キャラクター対応版"""
+    """テキストメッセージ受信時の処理 - シンプル高速版"""
     try:
         session_id = data.get('session_id', 'default')
         message = data.get('message', '')
-        personality = data.get('personality', 'friendly')  # キャラクター情報取得
+        personality = data.get('personality', 'friendly')
+        voice_id = data.get('voice_id')
         
         if not message.strip():
             return
         
-        print(f"[DEBUG] Received message with personality: {personality}")  # デバッグログ
+        print(f"[DEBUG] Processing message with personality: {personality}")
         
-        # AI応答生成（キャラクター指定）
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        response = loop.run_until_complete(
-            ai_manager.generate_response(session_id, message, personality)
-        )
-        loop.close()
-
-        # 音声合成
-        voice_id = data.get('voice_id')
-        audio_data = tts_manager.synthesize_speech(response['text'], voice_id=voice_id)
+        # 高速レスポンスキャッシュ（即答）
+        cached_responses = {
+            'こんにちは': {'yui_natural': 'こんにちは〜！ユイだよっ。会えて嬉しいな♪', 'rei_engineer': 'こんにちは', 'friendly': 'こんにちは！'},
+            'ありがとう': {'yui_natural': 'どういたしまして〜♪', 'rei_engineer': 'どういたしまして', 'friendly': 'どういたしまして！'},
+            'おはよう': {'yui_natural': 'おはようございます〜♪', 'rei_engineer': 'おはよう', 'friendly': 'おはよう！'},
+            'こんばんは': {'yui_natural': 'こんばんは〜♪', 'rei_engineer': 'こんばんは', 'friendly': 'こんばんは！'},
+            'はい': {'yui_natural': 'はい〜♪', 'rei_engineer': 'はい', 'friendly': 'はい！'},
+            'いいえ': {'yui_natural': 'そうですね〜', 'rei_engineer': 'そうですか', 'friendly': 'そうだね'}
+        }
         
-        # レスポンス送信（追加情報も含める）
-        emit('message_response', {
-            'text': response['text'],
-            'emotion': response['emotion'],
-            'user_emotion': response['user_emotion'],
-            'audio_data': audio_data,  # audio_urlからaudio_dataに変更
-            'timestamp': datetime.now().isoformat(),
-            'personality': personality,  # キャラクター情報を返す
-            'is_tech_excited': response.get('is_tech_excited', False)  # 技術興奮状態
-        })
+        # キャッシュチェック（0.001秒で即答）
+        user_msg_clean = message.strip().replace('！', '').replace('!', '').replace('？', '').replace('?', '')
+        if user_msg_clean in cached_responses and personality in cached_responses[user_msg_clean]:
+            cached_response = cached_responses[user_msg_clean][personality]
+            print(f"[CACHE] Using cached response for: {user_msg_clean}")
+            
+            # 即座にレスポンス送信
+            socketio.emit('message_response', {
+                'text': cached_response,
+                'emotion': 'happy',
+                'user_emotion': 'neutral',
+                'audio_data': None,  # TTSは後で非同期実行
+                'timestamp': datetime.now().isoformat(),
+                'personality': personality,
+                'is_tech_excited': False
+            })
+            return
+        # 高速同期処理に変更
+        start_time = time.time()
+        
+        # AI応答生成（同期処理で高速化）
+        try:
+            context = ai_manager.build_minimal_context(message, personality, False)
+            
+            # Gemini API呼び出し（並行タイムアウト）
+            try:
+                import concurrent.futures
+                import threading
+                
+                def call_gemini():
+                    return primary_model.generate_content(context)
+                
+                # 3秒でタイムアウト
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(call_gemini)
+                    try:
+                        response = future.result(timeout=3.0)
+                        response_text = response.text
+                    except concurrent.futures.TimeoutError:
+                        raise TimeoutError("Gemini API timeout")
+                
+            except Exception as e:
+                print(f"[WARNING] Gemini failed ({str(e)[:50]}), using instant fallback")
+                
+                # 即座フォールバック応答
+                fallback_responses = {
+                    'yui_natural': 'えーっと...ちょっと考えさせてくださいね〜♪',
+                    'rei_engineer': '...処理中です',
+                    'friendly': 'ちょっと待ってね！'
+                }
+                response_text = fallback_responses.get(personality, 'しばらくお待ちください')
+            
+            ai_time = time.time() - start_time
+            print(f"[PERF] AI response generated in {ai_time:.2f}s")
+            
+            # 感情分析
+            user_emotion = ai_manager.analyze_emotion(message)
+            response_emotion = ai_manager.analyze_emotion(response_text)
+            
+            # 即座にテキストレスポンス送信（音声は後で）
+            socketio.emit('message_response', {
+                'text': response_text,
+                'emotion': response_emotion,
+                'user_emotion': user_emotion,
+                'audio_data': None,  # 音声は後で別送信
+                'timestamp': datetime.now().isoformat(),
+                'personality': personality,
+                'is_tech_excited': False
+            })
+            
+            total_time = time.time() - start_time
+            print(f"[PERF] Text response sent in {total_time:.2f}s")
+            
+            # 音声合成は非同期で実行（ユーザー体験向上）
+            def generate_audio_async():
+                try:
+                    tts_start = time.time()
+                    audio_data = tts_manager.synthesize_speech_optimized(response_text, voice_id=voice_id)
+                    tts_time = time.time() - tts_start
+                    print(f"[PERF] TTS synthesis completed in {tts_time:.2f}s")
+                    
+                    if audio_data:
+                        # 音声データを別途送信
+                        socketio.emit('audio_ready', {
+                            'audio_data': audio_data,
+                            'timestamp': datetime.now().isoformat()
+                        })
+                except Exception as e:
+                    print(f"[WARNING] TTS failed: {e}")
+            
+            # 音声生成をバックグラウンドで実行
+            threading.Thread(target=generate_audio_async, daemon=True).start()
+            
+            # 会話履歴保存（同期処理で高速化）
+            # ai_manager.save_conversation_sync(session_id, message, response_text, user_emotion, response_emotion)
+            
+        except Exception as e:
+            logger.error(f"Error in message processing: {e}")
+            socketio.emit('error', {'message': 'メッセージの処理中にエラーが発生しました。'})
         
     except Exception as e:
         logger.error(f"Error handling message: {e}")
@@ -592,41 +976,28 @@ def handle_message(data):
 
 @socketio.on('send_audio')
 def handle_audio(data):
-    """音声メッセージ受信時の処理"""
+    """音声メッセージ受信時の処理 - 最適化版"""
     try:
         session_id = data.get('session_id', 'default')
         audio_data = bytes.fromhex(data.get('audio_data', ''))
+        personality = data.get('personality', 'friendly')
         
         if not audio_data:
             return
         
-        # 非同期処理の実行
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        # ストリーミング処理を使用
+        async def process_audio_streaming():
+            transcribed_text = await stt_manager.transcribe_audio(audio_data)
+            
+            if not transcribed_text:
+                socketio.emit('error', {'message': '音声の認識に失敗しました。'})
+                return
+            
+            # 認識したテキストをストリーミング処理
+            await ai_manager.generate_response_streaming(session_id, transcribed_text, personality)
         
-        transcribed_text = loop.run_until_complete(stt_manager.transcribe_audio(audio_data))
-        
-        if not transcribed_text:
-            emit('error', {'message': '音声の認識に失敗しました。'})
-            loop.close()
-            return
-        
-        response = loop.run_until_complete(ai_manager.generate_response(session_id, transcribed_text))
-        loop.close()
-
-        # 音声合成
-        voice_id = data.get('voice_id')
-        audio_data = tts_manager.synthesize_speech(response['text'], voice_id=voice_id)
-        
-        # レスポンス送信
-        emit('audio_response', {
-            'transcribed_text': transcribed_text,
-            'response_text': response['text'],
-            'emotion': response['emotion'],
-            'user_emotion': response['user_emotion'],
-            'audio_data': audio_data,  # audio_urlからaudio_dataに変更
-            'timestamp': datetime.now().isoformat()
-        })
+        # 非同期処理を実行
+        asyncio.run(process_audio_streaming())
         
     except Exception as e:
         logger.error(f"Error handling audio: {e}")
@@ -665,4 +1036,5 @@ if __name__ == '__main__':
     
     port = int(os.environ.get('PORT', 5000))
     print(f"Starting server on port {port}")
+    print("ElevenLabs TTS ready for high-speed processing")
     socketio.run(app, host='0.0.0.0', port=port, debug=True)

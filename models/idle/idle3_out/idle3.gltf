@@ -6390,5 +6390,173 @@
                 1.0
             ]
         }
-    ]
+    ],
+    "extensionsUsed": [
+        "VRMC_vrm_animation"
+    ],
+    "extensions": {
+        "VRMC_vrm_animation": {
+            "specVersion": "1.0",
+            "humanoid": {
+                "humanBones": {
+                    "hips": {
+                        "node": 2
+                    },
+                    "spine": {
+                        "node": 3
+                    },
+                    "chest": {
+                        "node": 35
+                    },
+                    "upperChest": {
+                        "node": 36
+                    },
+                    "neck": {
+                        "node": 37
+                    },
+                    "head": {
+                        "node": 39
+                    },
+                    "leftShoulder": {
+                        "node": 50
+                    },
+                    "leftUpperArm": {
+                        "node": 51
+                    },
+                    "leftLowerArm": {
+                        "node": 52
+                    },
+                    "leftHand": {
+                        "node": 56
+                    },
+                    "rightShoulder": {
+                        "node": 74
+                    },
+                    "rightUpperArm": {
+                        "node": 75
+                    },
+                    "rightLowerArm": {
+                        "node": 78
+                    },
+                    "rightHand": {
+                        "node": 82
+                    },
+                    "leftUpperLeg": {
+                        "node": 4
+                    },
+                    "leftLowerLeg": {
+                        "node": 5
+                    },
+                    "leftFoot": {
+                        "node": 6
+                    },
+                    "leftToes": {
+                        "node": 8
+                    },
+                    "rightUpperLeg": {
+                        "node": 19
+                    },
+                    "rightLowerLeg": {
+                        "node": 22
+                    },
+                    "rightFoot": {
+                        "node": 23
+                    },
+                    "rightToes": {
+                        "node": 24
+                    },
+                    "leftThumbProximal": {
+                        "node": 69
+                    },
+                    "leftThumbIntermediate": {
+                        "node": 70
+                    },
+                    "leftThumbDistal": {
+                        "node": 71
+                    },
+                    "leftIndexProximal": {
+                        "node": 60
+                    },
+                    "leftIndexIntermediate": {
+                        "node": 61
+                    },
+                    "leftIndexDistal": {
+                        "node": 62
+                    },
+                    "leftMiddleProximal": {
+                        "node": 57
+                    },
+                    "leftMiddleIntermediate": {
+                        "node": 58
+                    },
+                    "leftMiddleDistal": {
+                        "node": 59
+                    },
+                    "leftRingProximal": {
+                        "node": 63
+                    },
+                    "leftRingIntermediate": {
+                        "node": 64
+                    },
+                    "leftRingDistal": {
+                        "node": 65
+                    },
+                    "leftLittleProximal": {
+                        "node": 66
+                    },
+                    "leftLittleIntermediate": {
+                        "node": 67
+                    },
+                    "leftLittleDistal": {
+                        "node": 68
+                    },
+                    "rightThumbProximal": {
+                        "node": 89
+                    },
+                    "rightThumbIntermediate": {
+                        "node": 90
+                    },
+                    "rightThumbDistal": {
+                        "node": 91
+                    },
+                    "rightIndexProximal": {
+                        "node": 92
+                    },
+                    "rightIndexIntermediate": {
+                        "node": 93
+                    },
+                    "rightIndexDistal": {
+                        "node": 94
+                    },
+                    "rightMiddleProximal": {
+                        "node": 83
+                    },
+                    "rightMiddleIntermediate": {
+                        "node": 84
+                    },
+                    "rightMiddleDistal": {
+                        "node": 85
+                    },
+                    "rightRingProximal": {
+                        "node": 86
+                    },
+                    "rightRingIntermediate": {
+                        "node": 87
+                    },
+                    "rightRingDistal": {
+                        "node": 88
+                    },
+                    "rightLittleProximal": {
+                        "node": 95
+                    },
+                    "rightLittleIntermediate": {
+                        "node": 96
+                    },
+                    "rightLittleDistal": {
+                        "node": 97
+                    }
+                }
+            }
+        }
+    }
 }

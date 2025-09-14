@@ -57,6 +57,19 @@ class AIWifeApp {
         this.currentConversation = null;
         this.conversationMessages = [];
         
+        // ストリーミング応答管理
+        this.currentStreamingSession = null;
+        this.audioChunkQueue = [];
+        this.isPlayingAudio = false;
+        this.audioPlaybackIndex = 0;
+        this.receivedChunks = new Map(); // chunk_index -> chunk_data
+        this.fullResponseText = '';
+        
+        // アニメーション状態管理
+        this.currentAnimationType = null;
+        this.idleTimer = null;
+        this.idleTimeout = 10000; // 10秒後にアイドルアニメーションに復帰
+        
         // UI要素
         this.elements = {
             hamburgerMenu: document.getElementById('hamburgerMenu'),
@@ -80,7 +93,6 @@ class AIWifeApp {
         // 設定
         this.settings = {
             character: 'yui.vrm', // デフォルトをユイのモデルに変更
-            animation: 'animation.vrma',
             voiceId: null, // ★ voiceActorIdからvoiceIdに変更
             volume: 0.7,
             voiceSpeed: 1.0,
@@ -117,10 +129,10 @@ class AIWifeApp {
             
             console.log('AI Wife App initialized successfully');
             
-            // 初期化完了後にレイに挨拶
+            // 初期化完了後の処理を高速化（2秒 → 0.5秒）
             setTimeout(() => {
                 // this.send3DMessage('初めまして！');
-            }, 2000); // 2秒後に挨拶
+            }, 500);
         } catch (error) {
             console.error('Failed to initialize app:', error);
             this.showError('アプリケーションの初期化に失敗しました');
@@ -284,6 +296,25 @@ class AIWifeApp {
         
         this.socket.on('message_response', (data) => {
             this.handleMessageResponse(data);
+        });
+        
+        // 音声データ受信イベント（非同期）
+        this.socket.on('audio_ready', (data) => {
+            console.log('[Debug] Audio data received asynchronously');
+            if (data.audio_data) {
+                this.playAudioData(data.audio_data);
+            }
+        });
+        
+        // ストリーミング対応イベントハンドラー
+        this.socket.on('message_chunk', (data) => {
+            console.log('[Debug] WebSocket received message_chunk event');
+            this.handleMessageChunk(data);
+        });
+        
+        this.socket.on('streaming_complete', (data) => {
+            console.log('[Debug] WebSocket received streaming_complete event');
+            this.handleStreamingComplete(data);
         });
         
         this.socket.on('audio_response', (data) => {
@@ -508,6 +539,10 @@ class AIWifeApp {
     send3DMessage(message) {
         console.log('Sending 3D message:', message);
         console.log('Character personality:', this.settings.personality);
+        
+        // ユーザーがメッセージを送信した際はThinkingアニメーションを再生
+        this.playAnimation('thinking', { loop: true });
+        
         this.showLoading();
         
         // ユーザーメッセージを会話履歴に追加
@@ -517,8 +552,28 @@ class AIWifeApp {
             session_id: this.sessionId,
             message: message,
             voice_id: this.settings.voiceId,
-            personality: this.settings.personality // キャラクター情報を追加
+            personality: this.settings.personality
         });
+    }
+    
+    /**
+     * ストリーミングセッションを初期化
+     */
+    initializeStreamingSession(message) {
+        this.currentStreamingSession = {
+            startTime: Date.now(),
+            message: message,
+            expectedChunks: 0
+        };
+        
+        // 前回のデータをクリア
+        this.audioChunkQueue = [];
+        this.isPlayingAudio = false;
+        this.audioPlaybackIndex = 0;
+        this.receivedChunks.clear();
+        this.fullResponseText = '';
+        
+        console.log('[Debug] Streaming session initialized');
     }
     
     /**
@@ -576,7 +631,7 @@ class AIWifeApp {
     }
     
     /**
-     * タイピング効果でテキストを表示
+     * タイピング効果でテキストを表示（高速化版）
      */
     async typeText(text) {
         if (!this.speechBubble) return;
@@ -590,22 +645,22 @@ class AIWifeApp {
         // 吹き出しを表示
         this.speechBubble.classList.add('show');
         
-        // 少し待ってからタイピング開始
-        await new Promise(resolve => setTimeout(resolve, 300));
+        // タイピング開始前の待機時間を短縮（300ms → 100ms）
+        await new Promise(resolve => setTimeout(resolve, 100));
         
-        // タイピング効果
+        // タイピング効果（高速化：50ms → 20ms）
         textElement.innerHTML = '';
         for (let i = 0; i <= text.length; i++) {
             textElement.textContent = text.substring(0, i);
-            await new Promise(resolve => setTimeout(resolve, 50));
+            await new Promise(resolve => setTimeout(resolve, 20)); // 高速化
         }
         
         this.isTyping = false;
         
-        // 5秒後に自動で非表示
+        // 自動非表示時間を短縮（5秒 → 3秒）
         setTimeout(() => {
             this.hideARSpeechBubble();
-        }, 5000);
+        }, 3000);
     }
     
     /**
@@ -754,8 +809,8 @@ class AIWifeApp {
             // アニメーションミキサーを作成
             this.mixer = new THREE.AnimationMixer(this.vrm.scene);
             
-            // デフォルトアニメーションの読み込み
-            await this.loadAnimation();
+            // 初期アイドルアニメーションの開始
+            this.playAnimation('idle', { loop: true });
             
             this.hideLoading();
             console.log('Character loaded successfully:', this.vrm);
@@ -768,38 +823,236 @@ class AIWifeApp {
     }
     
     /**
-     * アニメーションの読み込み
+     * glTFアニメーション（VRMA形式）の読み込み
      */
-    async loadAnimation() {
+    async loadGLTFAnimation(animationPath, options = {}) {
         try {
-            if (!this.vrm || !this.mixer) return;
+            if (!this.vrm || !this.mixer) return null;
             
             const loader = new GLTFLoader();
+            // VRMAnimationLoaderPluginを使用してVRMA形式を読み込み
             loader.register((parser) => new VRMAnimationLoaderPlugin(parser));
             
-            // VRMAファイルの読み込み
-            const gltfVrma = await loader.loadAsync(`./models/${this.settings.animation}`);
-            const vrmAnimation = gltfVrma.userData.vrmAnimations[0];
+            // ファイル存在チェック（フェッチで確認）
+            try {
+                const response = await fetch(animationPath, { method: 'HEAD' });
+                if (!response.ok) {
+                    console.warn(`Animation file not found: ${animationPath}`);
+                    return null;
+                }
+            } catch (fetchError) {
+                console.warn(`Failed to check animation file: ${animationPath}`, fetchError);
+                return null;
+            }
             
-            // アニメーションクリップを作成
+            // glTFファイルの読み込み（VRMA拡張付き）
+            const gltf = await loader.loadAsync(animationPath);
+            
+            // VRMAアニメーションデータを取得
+            const vrmAnimation = gltf.userData.vrmAnimations?.[0];
+            if (!vrmAnimation) {
+                console.warn('No VRM animations found in glTF file:', animationPath);
+                return null;
+            }
+            
+            // VRMアニメーションクリップを作成
             const clip = createVRMAnimationClip(vrmAnimation, this.vrm);
             
-            // 既存のアニメーションを停止
-            this.mixer.stopAllAction();
-            
-            // 新しいアニメーションを再生
+            // アニメーションアクションを作成
             const action = this.mixer.clipAction(clip);
-            action.play();
             
-            console.log('Animation loaded:', this.settings.animation);
+            // オプション設定
+            if (options.loop !== undefined) {
+                action.setLoop(options.loop ? THREE.LoopRepeat : THREE.LoopOnce);
+            }
+            if (options.weight !== undefined) {
+                action.setEffectiveWeight(options.weight);
+            }
+            
+            return {
+                action: action,
+                clip: clip,
+                duration: clip.duration
+            };
             
         } catch (error) {
-            console.error('Failed to load animation:', error);
+            console.error('Failed to load glTF animation:', error);
+            console.warn(`Skipping animation: ${animationPath}`);
+            return null;
+        }
+    }
+
+    /**
+     * アニメーション再生
+     */
+    async playAnimation(animationType, options = {}) {
+        if (!this.vrm || !this.mixer) return;
+        
+        // アニメーション種別に応じてパスを決定
+        let animationPath;
+        
+        switch (animationType) {
+            case 'thinking':
+                animationPath = './models/Thinking_out/Thinking.gltf';
+                break;
+            case 'talking':
+                animationPath = './models/stand-talk_out/stand-talk.gltf';
+                break;
+            case 'idle':
+                animationPath = await this.getRandomIdleAnimation();
+                break;
+            case 'lying-sequence':
+                await this.playLyingSequence();
+                return;
+            default:
+                // カスタムパスが指定された場合
+                animationPath = animationType;
+        }
+        
+        if (!animationPath) return;
+        
+        // アニメーション状態を更新
+        this.updateAnimationState(animationType);
+        
+        // 現在のアニメーションを停止
+        this.mixer.stopAllAction();
+        
+        // 新しいアニメーションを読み込んで再生
+        const animationData = await this.loadGLTFAnimation(animationPath, options);
+        if (animationData) {
+            animationData.action.play();
+            console.log('Playing animation:', animationPath);
+            
+            // 終了時のコールバック設定
+            if (options.onFinished) {
+                animationData.action.setLoop(THREE.LoopOnce);
+                animationData.action.clampWhenFinished = true;
+                
+                const onFinished = () => {
+                    this.mixer.removeEventListener('finished', onFinished);
+                    options.onFinished();
+                };
+                this.mixer.addEventListener('finished', onFinished);
+            }
+            
+            // アイドルアニメーション以外で、ループしない場合は終了後にアイドルタイマーを開始
+            if (animationType !== 'idle' && !options.loop) {
+                animationData.action.setLoop(THREE.LoopOnce);
+                animationData.action.clampWhenFinished = true;
+                
+                const autoIdleReturn = () => {
+                    this.mixer.removeEventListener('finished', autoIdleReturn);
+                    this.startIdleTimer();
+                };
+                this.mixer.addEventListener('finished', autoIdleReturn);
+            }
+        } else {
+            // アニメーションの読み込みに失敗した場合のフォールバック
+            console.warn(`Animation failed to load, using fallback: ${animationPath}`);
+            if (animationType !== 'idle') {
+                // idle以外の場合はidleアニメーションにフォールバック
+                this.playAnimation('idle', { loop: true });
+            } else {
+                // idleアニメーション自体が失敗した場合は、基本のアイドル状態を維持
+                console.warn('All idle animations failed, maintaining current state');
+            }
+        }
+    }
+
+    /**
+     * ランダムアイドルアニメーション選択
+     */
+    async getRandomIdleAnimation() {
+        const idleAnimations = [
+            './models/idle/idle2_out/idle2.gltf',
+            './models/idle/idle3_out/idle3.gltf', 
+            './models/idle/idle4_out/idle4.gltf',
+            './models/idle/walk-think_out/walk-think.gltf'
+        ];
+        
+        // ランダム選択
+        const randomIndex = Math.floor(Math.random() * idleAnimations.length);
+        return idleAnimations[randomIndex];
+    }
+
+    /**
+     * 横臥シーケンスの再生（高速化版）
+     */
+    async playLyingSequence() {
+        const sequence = [
+            './models/idle/LyingDown_out/LyingDown.gltf',
+            './models/idle/SittingIdle_out/SittingIdle.gltf',
+            './models/idle/GettingUp_out/GettingUp.gltf'
+        ];
+        
+        for (let i = 0; i < sequence.length; i++) {
+            const animationPath = sequence[i];
+            const isLast = i === sequence.length - 1;
+            
+            await new Promise((resolve) => {
+                this.playAnimation(animationPath, {
+                    loop: false,
+                    onFinished: () => {
+                        console.log(`Lying sequence step ${i + 1} completed:`, animationPath);
+                        resolve();
+                    }
+                });
+            });
+            
+            // 待機時間を短縮（1秒 → 0.3秒）
+            if (!isLast) {
+                await new Promise(resolve => setTimeout(resolve, 300));
+            }
+        }
+        
+        console.log('Lying sequence completed');
+        
+        // シーケンス終了後はランダムアイドルに戻る
+        this.playAnimation('idle', { loop: true });
+    }
+
+    /**
+     * アイドル復帰タイマーを開始
+     */
+    startIdleTimer() {
+        // 既存のタイマーをクリア
+        if (this.idleTimer) {
+            clearTimeout(this.idleTimer);
+        }
+        
+        // 一定時間後にアイドルアニメーションに復帰
+        this.idleTimer = setTimeout(() => {
+            if (this.currentAnimationType !== 'idle') {
+                console.log('[Debug] Auto-returning to idle animation');
+                this.playAnimation('idle', { loop: true });
+            }
+        }, this.idleTimeout);
+    }
+
+    /**
+     * アイドルタイマーを停止
+     */
+    stopIdleTimer() {
+        if (this.idleTimer) {
+            clearTimeout(this.idleTimer);
+            this.idleTimer = null;
+        }
+    }
+
+    /**
+     * アニメーション状態の更新
+     */
+    updateAnimationState(animationType) {
+        this.currentAnimationType = animationType;
+        
+        // アイドル以外のアニメーション時はタイマーを停止
+        if (animationType !== 'idle') {
+            this.stopIdleTimer();
         }
     }
     
     /**
-     * 感情に基づくアニメーション再生
+     * 感情に基づくアニメーション再生（glTF版）
      */
     playEmotionAnimation(emotion, personality = 'friendly', isTechExcited = false) {
         if (!this.vrm || !this.mixer) return;
@@ -812,19 +1065,25 @@ class AIWifeApp {
             console.log('[Debug] Rei tech excitement: forcing happy emotion');
         }
         
-        const emotionAnimations = {
-            happy: 'taisou.vrma',
-            sad: 'utu.vrma',
-            surprised: 'zenshinwomiseru.vrma',
-            neutral: 'animation.vrma'
-        };
-        
-        const animationFile = emotionAnimations[selectedEmotion] || emotionAnimations.neutral;
-        
-        if (animationFile !== this.settings.animation) {
-            this.settings.animation = animationFile;
-            this.loadAnimation();
+        // 感情別のアニメーション選択
+        let animationType;
+        switch (selectedEmotion) {
+            case 'happy':
+                animationType = 'idle'; // ハッピーな時はランダムアイドル
+                break;
+            case 'sad':
+                animationType = 'lying-sequence'; // 悲しい時は横臥シーケンス
+                break;
+            case 'surprised':
+                // 驚いた時はthinkingアニメーションを使用（LookAroundファイルの代替）
+                animationType = 'thinking';
+                break;
+            default:
+                animationType = 'idle'; // デフォルトはランダムアイドル
         }
+        
+        // アニメーション再生
+        this.playAnimation(animationType, { loop: true });
         
         // 表情も変更（キャラクター別強度調整）
         this.setExpression(selectedEmotion, personality, isTechExcited);
@@ -886,6 +1145,43 @@ class AIWifeApp {
         
         // 表情変更後、新しいブリンクをスケジュール
         this.scheduleNextBlink();
+    }
+    
+    /**
+     * 表情を完全にリセット（ニュートラル状態に戻す）
+     */
+    resetToNeutralExpression() {
+        if (!this.vrm || !this.vrm.expressionManager) return;
+        
+        console.log('[Debug] Resetting all expressions to neutral state');
+        
+        const expressionManager = this.vrm.expressionManager;
+        
+        // 全ての感情表情を0にリセット
+        expressionManager.setValue('happy', 0);
+        expressionManager.setValue('sad', 0);
+        expressionManager.setValue('surprised', 0);
+        expressionManager.setValue('angry', 0);
+        expressionManager.setValue('relaxed', 0);
+        
+        // リップシンク関連も完全リセット
+        expressionManager.setValue('aa', 0);
+        expressionManager.setValue('ih', 0);
+        expressionManager.setValue('ou', 0);
+        
+        // ブリンク状態を完全リセット
+        expressionManager.setValue('blink', 0);
+        this.isBlinking = false;
+        this.lipSyncWeight = 0.0;
+        
+        // 現在の表情状態を更新
+        this.currentExpression = 'neutral';
+        this.currentEmotion = 'neutral';
+        
+        // 新しいブリンクサイクルを開始
+        this.scheduleNextBlink();
+        
+        console.log('[Debug] Expression reset completed - all values set to 0, blink cycle restarted');
     }
     
     /**
@@ -1027,10 +1323,197 @@ class AIWifeApp {
     /**
      * メッセージレスポンス処理（3D UI専用）- キャラクター対応版
      */
+    /**
+     * ストリーミングチャンクメッセージ処理
+     */
+    handleMessageChunk(data) {
+        console.log('[Debug] Received message chunk:', data.chunk_index, data.text);
+        console.log('[Debug] Audio data present:', !!data.audio_data);
+        console.log('[Debug] Audio data size:', data.audio_data ? data.audio_data.length : 0);
+        
+        // チャンクをマップに保存
+        this.receivedChunks.set(data.chunk_index, data);
+        
+        // 音声データがある場合はキューに追加
+        if (data.audio_data) {
+            console.log('[Debug] Adding audio chunk to queue:', data.chunk_index);
+            this.audioChunkQueue.push({
+                index: data.chunk_index,
+                audio: data.audio_data,
+                text: data.text,
+                emotion: data.emotion
+            });
+            
+            console.log('[Debug] Audio queue length:', this.audioChunkQueue.length);
+            console.log('[Debug] Is playing audio:', this.isPlayingAudio);
+            
+            // 順次再生を開始（初回のみ）
+            if (!this.isPlayingAudio) {
+                console.log('[Debug] Starting audio chunk playback');
+                this.startAudioChunkPlayback();
+            }
+        } else {
+            console.log('[Debug] No audio data in chunk:', data.chunk_index);
+        }
+        
+        // テキストを蓄積
+        this.fullResponseText += data.text;
+        
+        // AR吹き出しを更新（最新チャンクのテキストで）
+        this.showARSpeechBubble(data.text);
+        
+        // 感情アニメーション
+        if (data.emotion) {
+            this.playEmotionAnimation(data.emotion, data.personality);
+        }
+        
+        // 初回チャンクでトークアニメーション開始
+        if (data.chunk_index === 1) {
+            this.playAnimation('talking', { loop: true });
+        }
+    }
+    
+    /**
+     * ストリーミング完了処理
+     */
+    handleStreamingComplete(data) {
+        console.log('[Debug] Streaming complete:', data);
+        console.log('[Debug] Total chunks received:', this.receivedChunks.size);
+        console.log('[Debug] Audio queue length at completion:', this.audioChunkQueue.length);
+        this.hideLoading();
+        
+        // 完全なレスポンステキストを会話履歴に追加
+        this.addMessageToConversation('assistant', data.full_text);
+        
+        // 最終的なAR吹き出し表示
+        this.showARSpeechBubble(data.full_text);
+        
+        // ストリーミングセッションをリセット
+        this.currentStreamingSession = null;
+        this.fullResponseText = '';
+        
+        console.log('[Debug] Streaming session completed and reset');
+    }
+    
+    /**
+     * 音声チャンクの順次再生
+     */
+    async startAudioChunkPlayback() {
+        if (this.isPlayingAudio) return;
+        
+        this.isPlayingAudio = true;
+        this.audioPlaybackIndex = 1; // 1から開始
+        
+        console.log('[Debug] Starting audio chunk playback');
+        
+        while (this.audioChunkQueue.length > 0 || this.shouldWaitForMoreChunks()) {
+            // 次のチャンクが来るまで待機
+            const chunk = this.getNextAudioChunk();
+            
+            if (chunk) {
+                console.log(`[Debug] Playing audio chunk ${chunk.index}`);
+                
+                try {
+                    await this.playAudioChunk(chunk);
+                    this.audioPlaybackIndex++;
+                } catch (error) {
+                    console.error(`[Error] Failed to play audio chunk ${chunk.index}:`, error);
+                    this.audioPlaybackIndex++;
+                }
+            } else {
+                // チャンクが来るまで少し待機
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+        }
+        
+        // 全ての音声再生完了
+        this.isPlayingAudio = false;
+        console.log('[Debug] Audio chunk playback completed');
+        
+        // アイドルアニメーションに戻る
+        this.playAnimation('idle', { loop: true });
+    }
+    
+    /**
+     * 次の音声チャンクを取得
+     */
+    getNextAudioChunk() {
+        // 期待するインデックスのチャンクを探す
+        const chunkIndex = this.audioChunkQueue.findIndex(chunk => chunk.index === this.audioPlaybackIndex);
+        
+        if (chunkIndex !== -1) {
+            return this.audioChunkQueue.splice(chunkIndex, 1)[0];
+        }
+        
+        return null;
+    }
+    
+    /**
+     * より多くのチャンクを待つべきかを判定
+     */
+    shouldWaitForMoreChunks() {
+        // ストリーミングが完了していない、または待機中のチャンクがある場合
+        return this.currentStreamingSession !== null || this.audioChunkQueue.length > 0;
+    }
+    
+    /**
+     * 個別音声チャンクを再生
+     */
+    async playAudioChunk(chunk) {
+        console.log(`[Debug] Attempting to play audio chunk ${chunk.index}`);
+        console.log(`[Debug] Audio data format:`, chunk.audio.substring(0, 50));
+        
+        return new Promise((resolve, reject) => {
+            try {
+                const audio = new Audio(chunk.audio);
+                audio.volume = this.settings.volume;
+                audio.playbackRate = this.settings.voiceSpeed;
+                
+                console.log(`[Debug] Audio object created for chunk ${chunk.index}`);
+                console.log(`[Debug] Volume: ${audio.volume}, PlaybackRate: ${audio.playbackRate}`);
+                
+                // リップシンクの設定
+                this.setupLipSync(audio);
+                
+                audio.onloadstart = () => {
+                    console.log(`[Debug] Audio chunk ${chunk.index} load started`);
+                };
+                
+                audio.oncanplay = () => {
+                    console.log(`[Debug] Audio chunk ${chunk.index} can play`);
+                };
+                
+                audio.onended = () => {
+                    console.log(`[Debug] Audio chunk ${chunk.index} ended`);
+                    resolve();
+                };
+                
+                audio.onerror = (error) => {
+                    console.error(`[Debug] Audio chunk ${chunk.index} error:`, error);
+                    console.error(`[Debug] Audio error details:`, audio.error);
+                    reject(error);
+                };
+                
+                console.log(`[Debug] Starting play() for chunk ${chunk.index}`);
+                audio.play().then(() => {
+                    console.log(`[Debug] Audio chunk ${chunk.index} started playing successfully`);
+                }).catch((error) => {
+                    console.error(`[Debug] Audio chunk ${chunk.index} play() failed:`, error);
+                    reject(error);
+                });
+                
+            } catch (error) {
+                console.error(`[Debug] Exception in playAudioChunk ${chunk.index}:`, error);
+                reject(error);
+            }
+        });
+    }
+
     handleMessageResponse(data) {
         console.log('[Debug] Received message response:', data);
         console.log('[Debug] Character personality:', data.personality);
-        console.log('[Debug] Tech excited state:', data.is_tech_excited);
+        console.log('[Debug] Audio data present:', !!data.audio_data);
+        console.log('[Debug] Audio data length:', data.audio_data ? data.audio_data.length : 0);
         this.hideLoading();
         
         // AIレスポンスを会話履歴に追加
@@ -1047,9 +1530,21 @@ class AIWifeApp {
             this.playEmotionAnimation(data.emotion, data.personality, data.is_tech_excited);
         }
         
+        // AI応答時はトークアニメーションを再生
+        this.playAnimation('talking', { 
+            loop: true,
+            onFinished: () => {
+                // 音声終了後はアイドルアニメーションに戻る
+                this.playAnimation('idle', { loop: true });
+            }
+        });
+        
         // 音声再生
         if (data.audio_data) {
+            console.log('[Debug] Starting audio playback');
             this.playAudioData(data.audio_data);
+        } else {
+            console.log('[Debug] No audio data to play');
         }
     }
     
@@ -1277,11 +1772,11 @@ class AIWifeApp {
                     this.vrm.expressionManager.setValue('ih', 0);
                     this.vrm.expressionManager.setValue('ou', 0);
                     
-                    // 表情をneutralに戻す
+                    // 表情を完全リセット（新しいメソッドを使用）
                     setTimeout(() => {
-                        this.setExpression('neutral');
-                        console.log('[Debug] Expression reset to neutral after audio ended');
-                    }, 500); // 0.5秒後にneutralに戻す
+                        this.resetToNeutralExpression();
+                        console.log('[Debug] Expression completely reset to neutral after audio ended');
+                    }, 500); // 0.5秒後に完全リセット
                 }
             });
 
@@ -1315,18 +1810,37 @@ class AIWifeApp {
      */
     playAudioData(audioData) {
         console.log('[Debug] playAudioData called with data:', audioData ? 'Data received' : 'No data');
+        console.log('[Debug] Audio data format check:', audioData ? audioData.substring(0, 50) : 'No data');
+        
         try {
             if (!audioData) {
                 console.log('[Debug] No audio data provided. Skipping playback.');
+                // 音声データがない場合でもアイドル状態に戻る
+                this.startIdleTimer();
                 return;
             }
 
             // Base64データから音声オブジェクトを作成
             const audio = new Audio(audioData);
             console.log('[Debug] Created Audio object from base64 data');
+            console.log('[Debug] Audio object created successfully:', !!audio);
 
             audio.volume = this.settings.volume;
             audio.playbackRate = this.settings.voiceSpeed;
+            console.log('[Debug] Audio settings - Volume:', audio.volume, 'PlaybackRate:', audio.playbackRate);
+
+            // エラーハンドリングを強化
+            audio.addEventListener('error', (e) => {
+                console.error('[Debug] Audio error event:', e);
+                console.error('[Debug] Audio error details:', audio.error);
+                console.error('[Debug] Audio error code:', audio.error ? audio.error.code : 'No error code');
+                console.error('[Debug] Audio error message:', audio.error ? audio.error.message : 'No error message');
+            });
+
+            // 音声ロード開始
+            audio.addEventListener('loadstart', () => {
+                console.log('[Debug] Audio load started');
+            });
 
             // 音声ロード完了後にリップシンクセットアップ
             audio.addEventListener('loadeddata', () => {
@@ -1337,6 +1851,11 @@ class AIWifeApp {
                     console.warn('Lip sync setup failed, using fallback:', error);
                     this.simulateBasicLipSync();
                 }
+            });
+
+            // 音声再生可能状態
+            audio.addEventListener('canplay', () => {
+                console.log('[Debug] Audio can play');
             });
 
             // 音声再生開始
@@ -1360,6 +1879,11 @@ class AIWifeApp {
                         console.log('[Debug] Expression reset to neutral after audio ended');
                     }, 500); // 0.5秒後にneutralに戻す
                 }
+                
+                // 音声終了後、少し待ってからアイドルアニメーションに復帰
+                setTimeout(() => {
+                    this.startIdleTimer();
+                }, 1000);
             });
 
             // エラーハンドリング
@@ -1367,23 +1891,42 @@ class AIWifeApp {
                 console.error('[Debug] Audio error:', e);
                 console.log('[Debug] Falling back to basic lip sync animation');
                 this.simulateBasicLipSync();
+                this.startIdleTimer();
             });
 
             console.log('[Debug] Attempting to play audio...');
-            audio.play().then(() => {
-                console.log('[Debug] Audio play() promise resolved successfully');
-            }).catch(error => {
-                console.error('Failed to play audio:', error);
-                console.log('[Debug] Using fallback lip sync animation');
-                this.simulateBasicLipSync();
-                this.showError('音声の再生に失敗しました。リップシンクのみ実行します。');
-            });
+            
+            // 音声再生の実行
+            const playPromise = audio.play();
+            
+            if (playPromise !== undefined) {
+                playPromise.then(() => {
+                    console.log('[Debug] Audio play() promise resolved successfully');
+                }).catch((error) => {
+                    console.error('[Debug] Audio play() promise rejected:', error);
+                    console.error('[Debug] Error name:', error.name);
+                    console.error('[Debug] Error message:', error.message);
+                    
+                    // 自動再生がブロックされた場合の処理
+                    if (error.name === 'NotAllowedError') {
+                        console.log('[Debug] Autoplay was prevented. User interaction required.');
+                        // ユーザーに音声再生の許可を求める（必要に応じて）
+                    }
+                    
+                    console.log('[Debug] Using fallback lip sync animation');
+                    this.simulateBasicLipSync();
+                    this.startIdleTimer();
+                });
+            } else {
+                console.log('[Debug] Audio play() returned undefined (older browser)');
+            }
 
         } catch (error) {
             console.error('Error in playAudioData:', error);
             console.log('[Debug] Using fallback lip sync animation due to error');
             this.simulateBasicLipSync();
             this.showError('音声処理でエラーが発生しました。');
+            this.startIdleTimer();
         }
     }
     
@@ -1470,11 +2013,11 @@ class AIWifeApp {
                 this.lipSyncWeight = 0.0;
                 this.updateMouthExpression();
                 
-                // 表情をneutralに戻す
+                // 表情を完全リセット（新しいメソッドを使用）
                 setTimeout(() => {
-                    this.setExpression('neutral');
-                    console.log('[Debug] Expression reset to neutral after lip sync simulation ended');
-                }, 500); // 0.5秒後にneutralに戻す
+                    this.resetToNeutralExpression();
+                    console.log('[Debug] Expression completely reset to neutral after lip sync simulation ended');
+                }, 500); // 0.5秒後に完全リセット
             }
         };
         
@@ -1706,15 +2249,16 @@ class AIWifeApp {
     }
     
     /**
-     * エラー表示
+     * エラー表示（高速化版）
      */
     showError(message) {
         this.elements.errorMessage.textContent = message;
         this.elements.errorToast.style.display = 'flex';
         
+        // エラートーストの表示時間を短縮（5秒 → 3秒）
         setTimeout(() => {
             this.hideErrorToast();
-        }, 5000);
+        }, 3000);
     }
     
     /**
