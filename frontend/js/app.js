@@ -79,12 +79,12 @@ class AIWifeApp {
         
         // 設定
         this.settings = {
-            character: 'avatar.vrm',
+            character: 'yui.vrm', // デフォルトをユイのモデルに変更
             animation: 'animation.vrma',
             voiceId: null, // ★ voiceActorIdからvoiceIdに変更
             volume: 0.7,
             voiceSpeed: 1.0,
-            personality: 'rei_engineer', // デフォルトをレイに変更
+            personality: 'yui_natural', // デフォルトをユイに変更
             memoryEnabled: true,
             background: '', // 背景設定
             use3DUI: true // 3D UIモードを有効化
@@ -171,11 +171,6 @@ class AIWifeApp {
             this.settings.character = e.target.value;
             this.loadCharacter();
         });
-        
-        document.getElementById('animationSelect').addEventListener('change', (e) => {
-            this.settings.animation = e.target.value;
-            this.loadAnimation();
-        });
 
         document.getElementById('voiceActorSelect').addEventListener('change', (e) => {
             this.settings.voiceId = e.target.value;
@@ -184,6 +179,15 @@ class AIWifeApp {
         document.getElementById('backgroundSelect').addEventListener('change', (e) => {
             this.settings.background = e.target.value;
             this.loadBackground();
+        });
+        
+        // ファイルアップロード機能
+        document.getElementById('characterUpload').addEventListener('change', (e) => {
+            this.handleCharacterUpload(e);
+        });
+        
+        document.getElementById('backgroundUpload').addEventListener('change', (e) => {
+            this.handleBackgroundUpload(e);
         });
         
         document.getElementById('volumeSlider').addEventListener('input', (e) => {
@@ -327,16 +331,16 @@ class AIWifeApp {
         
         // カメラ
         this.camera = new THREE.PerspectiveCamera(30.0, window.innerWidth / window.innerHeight, 0.1, 20.0);
-        this.camera.position.set(0.0, 1.0, -3.0); // Y座標を下げて下から見上げる角度に
+        this.camera.position.set(0.0, 0.9, -3.5); // Y座標を下げて下から見上げる角度に
         
         // カメラコントロール
         this.controls = new OrbitControls(this.camera, this.renderer.domElement);
         this.controls.screenSpacePanning = true;
-        this.controls.target.set(0.0, 0.7, 0.0); // ターゲットも少し下げて水平に近い角度に
+        this.controls.target.set(0.0, 0.9, 0.0); // ターゲットも少し下げて水平に近い角度に
         this.controls.enableDamping = true;
         this.controls.dampingFactor = 0.05;
-        this.controls.enableRotate = true; // 回転を無効化
-        this.controls.enableZoom = true; // ズームを無効化
+        this.controls.enableRotate = false; // 回転を無効化
+        this.controls.enableZoom = false; // ズームを無効化
         this.controls.enablePan = false; // パンを無効化
         this.controls.update();
         
@@ -630,8 +634,22 @@ class AIWifeApp {
                 return;
             }
             
+            let textureUrl;
+            
+            // カスタムファイルかどうかを確認
+            const backgroundSelect = document.getElementById('backgroundSelect');
+            const selectedOption = backgroundSelect.querySelector(`option[value="${this.settings.background}"]`);
+            
+            if (selectedOption && selectedOption.dataset.localUrl) {
+                // カスタムアップロードファイルの場合
+                textureUrl = selectedOption.dataset.localUrl;
+            } else {
+                // デフォルトファイルの場合
+                textureUrl = `/backgrounds/${this.settings.background}`;
+            }
+            
             const loader = new THREE.TextureLoader();
-            const texture = await loader.loadAsync(`/backgrounds/${this.settings.background}`);
+            const texture = await loader.loadAsync(textureUrl);
             
             // テクスチャの設定
             texture.mapping = THREE.EquirectangularReflectionMapping;
@@ -697,7 +715,21 @@ class AIWifeApp {
             loader.register((parser) => new VRMAnimationLoaderPlugin(parser));
             
             // VRMファイルの読み込み
-            const gltfVrm = await loader.loadAsync(`./models/${this.settings.character}`);
+            let modelUrl;
+            
+            // カスタムファイルかどうかを確認
+            const characterSelect = document.getElementById('characterSelect');
+            const selectedOption = characterSelect.querySelector(`option[value="${this.settings.character}"]`);
+            
+            if (selectedOption && selectedOption.dataset.localUrl) {
+                // カスタムアップロードファイルの場合
+                modelUrl = selectedOption.dataset.localUrl;
+            } else {
+                // デフォルトファイルの場合
+                modelUrl = `./models/${this.settings.character}`;
+            }
+            
+            const gltfVrm = await loader.loadAsync(modelUrl);
             this.vrm = gltfVrm.userData.vrm;
             
             // パフォーマンス最適化
@@ -1563,22 +1595,47 @@ class AIWifeApp {
     }
     
     /**
-     * キャラクター別のデフォルト音声を設定
+     * キャラクター別のデフォルト設定（音声・モデル）を適用
      */
     setCharacterDefaultVoice(personality) {
-        const characterVoices = {
-            'rei_engineer': 'cgSgspJ2msm6clMCkdW9', // Jessica
-            'yui_natural': 'Xb7hH8MSUJpSbSDYk0k2'  // 指定された音声ID
+        const characterSettings = {
+            'rei_engineer': {
+                voiceId: 'cgSgspJ2msm6clMCkdW9', // Jessica
+                model: 'avatar.vrm' // レイのモデル
+            },
+            'yui_natural': {
+                voiceId: 'Xb7hH8MSUJpSbSDYk0k2', // 指定された音声ID
+                model: 'yui.vrm' // ユイのモデル
+            }
         };
         
-        if (characterVoices[personality]) {
-            this.settings.voiceId = characterVoices[personality];
+        const characterConfig = characterSettings[personality];
+        if (characterConfig) {
+            // 音声ID設定
+            this.settings.voiceId = characterConfig.voiceId;
             console.log(`[Debug] Character voice set to: ${this.settings.voiceId} for ${personality}`);
+            
+            // モデル設定
+            const oldCharacter = this.settings.character;
+            this.settings.character = characterConfig.model;
+            console.log(`[Debug] Character model set to: ${this.settings.character} for ${personality}`);
             
             // 音声選択UIを更新
             const voiceSelect = document.getElementById('voiceActorSelect');
             if (voiceSelect) {
                 voiceSelect.value = this.settings.voiceId;
+            }
+            
+            // キャラクターモデル選択UIを更新
+            const characterSelect = document.getElementById('characterSelect');
+            if (characterSelect) {
+                characterSelect.value = this.settings.character;
+            }
+            
+            // モデルが変更された場合は再読み込み
+            if (oldCharacter !== this.settings.character) {
+                console.log(`[Debug] Reloading character model from ${oldCharacter} to ${this.settings.character}`);
+                this.loadCharacter();
             }
         }
     }
@@ -2223,7 +2280,6 @@ class AIWifeApp {
             
             // UI要素に反映
             document.getElementById('characterSelect').value = this.settings.character;
-            document.getElementById('animationSelect').value = this.settings.animation;
             document.getElementById('backgroundSelect').value = this.settings.background;
             document.getElementById('volumeSlider').value = Math.round(this.settings.volume * 100);
             document.getElementById('volumeValue').textContent = Math.round(this.settings.volume * 100) + '%';
@@ -2232,6 +2288,200 @@ class AIWifeApp {
             document.getElementById('personalitySelect').value = this.settings.personality;
             document.getElementById('memoryToggle').checked = this.settings.memoryEnabled;
             document.getElementById('use3DUIToggle').checked = this.settings.use3DUI;
+        }
+    }
+    
+    /**
+     * キャラクターファイルアップロード処理
+     */
+    async handleCharacterUpload(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+        
+        // ファイル形式チェック
+        if (!file.name.toLowerCase().endsWith('.vrm')) {
+            this.showError('VRMファイルのみアップロード可能です。');
+            return;
+        }
+        
+        try {
+            const statusElement = document.getElementById('characterUploadStatus');
+            statusElement.textContent = 'アップロード中...';
+            statusElement.className = 'upload-status';
+            
+            // ファイルをmodelsフォルダに保存（実際の実装では、サーバーへのアップロード処理が必要）
+            const fileName = `custom_${Date.now()}_${file.name}`;
+            
+            // URL.createObjectURLを使用してローカルファイルを読み込み
+            const fileUrl = URL.createObjectURL(file);
+            
+            // キャラクター選択ドロップダウンにオプションを追加
+            const characterSelect = document.getElementById('characterSelect');
+            const option = document.createElement('option');
+            option.value = fileName;
+            option.textContent = `カスタム: ${file.name}`;
+            option.dataset.localUrl = fileUrl;
+            characterSelect.appendChild(option);
+            
+            // アップロードされたファイルを選択
+            characterSelect.value = fileName;
+            this.settings.character = fileName;
+            
+            // キャラクターを読み込み
+            await this.loadCustomCharacter(fileUrl);
+            
+            statusElement.textContent = `${file.name} をアップロードしました`;
+            statusElement.className = 'upload-status success';
+            
+        } catch (error) {
+            console.error('Character upload failed:', error);
+            const statusElement = document.getElementById('characterUploadStatus');
+            statusElement.textContent = 'アップロードに失敗しました';
+            statusElement.className = 'upload-status error';
+            this.showError('キャラクターファイルのアップロードに失敗しました。');
+        }
+    }
+    
+    /**
+     * 背景ファイルアップロード処理
+     */
+    async handleBackgroundUpload(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+        
+        // ファイル形式チェック
+        if (!file.type.startsWith('image/jpeg') && !file.type.startsWith('image/jpg')) {
+            this.showError('JPEGファイルのみアップロード可能です。');
+            return;
+        }
+        
+        try {
+            const statusElement = document.getElementById('backgroundUploadStatus');
+            statusElement.textContent = 'アップロード中...';
+            statusElement.className = 'upload-status';
+            
+            const fileName = `custom_${Date.now()}_${file.name}`;
+            const fileUrl = URL.createObjectURL(file);
+            
+            // 背景選択ドロップダウンにオプションを追加
+            const backgroundSelect = document.getElementById('backgroundSelect');
+            const option = document.createElement('option');
+            option.value = fileName;
+            option.textContent = `カスタム: ${file.name}`;
+            option.dataset.localUrl = fileUrl;
+            backgroundSelect.appendChild(option);
+            
+            // アップロードされたファイルを選択
+            backgroundSelect.value = fileName;
+            this.settings.background = fileName;
+            
+            // 背景を読み込み
+            await this.loadCustomBackground(fileUrl);
+            
+            statusElement.textContent = `${file.name} をアップロードしました`;
+            statusElement.className = 'upload-status success';
+            
+        } catch (error) {
+            console.error('Background upload failed:', error);
+            const statusElement = document.getElementById('backgroundUploadStatus');
+            statusElement.textContent = 'アップロードに失敗しました';
+            statusElement.className = 'upload-status error';
+            this.showError('背景ファイルのアップロードに失敗しました。');
+        }
+    }
+    
+    /**
+     * カスタムキャラクターの読み込み
+     */
+    async loadCustomCharacter(fileUrl) {
+        if (!this.scene) return;
+        
+        try {
+            this.showLoading();
+            
+            // 既存のキャラクターを削除
+            if (this.vrm) {
+                this.scene.remove(this.vrm.scene);
+                this.vrm = null;
+            }
+            
+            // GLTFローダーの設定
+            const loader = new GLTFLoader();
+            loader.register((parser) => new VRMLoaderPlugin(parser));
+            
+            // VRMファイルの読み込み
+            const gltfVrm = await loader.loadAsync(fileUrl);
+            this.vrm = gltfVrm.userData.vrm;
+            
+            // パフォーマンス最適化
+            VRMUtils.removeUnnecessaryVertices(this.vrm.scene);
+            VRMUtils.removeUnnecessaryJoints(this.vrm.scene);
+            
+            // フラスタムカリングを無効化
+            this.vrm.scene.traverse((obj) => {
+                if (obj.isMesh) {
+                    obj.frustumCulled = false;
+                }
+            });
+            
+            // LookAtクォータニオンプロキシを追加
+            const lookAtQuatProxy = new VRMLookAtQuaternionProxy(this.vrm.lookAt);
+            lookAtQuatProxy.name = 'lookAtQuaternionProxy';
+            this.vrm.scene.add(lookAtQuatProxy);
+            
+            // シーンに追加
+            this.scene.add(this.vrm.scene);
+            
+            // アニメーションミキサーを再作成
+            if (this.mixer) {
+                this.mixer.stopAllAction();
+            }
+            this.mixer = new THREE.AnimationMixer(this.vrm.scene);
+            
+            this.hideLoading();
+            console.log('Custom character loaded successfully');
+            
+        } catch (error) {
+            console.error('Failed to load custom character:', error);
+            this.hideLoading();
+            throw error;
+        }
+    }
+    
+    /**
+     * カスタム背景の読み込み
+     */
+    async loadCustomBackground(fileUrl) {
+        try {
+            if (!this.scene) return;
+            
+            // 既存の背景を削除
+            if (this.backgroundMesh) {
+                this.scene.remove(this.backgroundMesh);
+                this.backgroundMesh = null;
+            }
+            
+            // テクスチャの読み込み
+            const textureLoader = new THREE.TextureLoader();
+            const texture = await new Promise((resolve, reject) => {
+                textureLoader.load(fileUrl, resolve, undefined, reject);
+            });
+            
+            // 180度のスフィア背景を作成
+            const geometry = new THREE.SphereGeometry(50, 32, 16, Math.PI, Math.PI);
+            const material = new THREE.MeshBasicMaterial({
+                map: texture,
+                side: THREE.BackSide
+            });
+            
+            this.backgroundMesh = new THREE.Mesh(geometry, material);
+            this.scene.add(this.backgroundMesh);
+            
+            console.log('Custom background loaded successfully');
+            
+        } catch (error) {
+            console.error('Failed to load custom background:', error);
+            throw error;
         }
     }
     

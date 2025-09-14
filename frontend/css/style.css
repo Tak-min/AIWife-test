@@ -1077,3 +1077,50 @@ body {
         padding: 2px 3px;
     }
 }
+
+/* =====================================
+   Upload Button Styles
+   ===================================== */
+
+.upload-button {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+    padding: 8px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    transition: all 0.3s ease;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    justify-content: center;
+    margin-top: 4px;
+}
+
+.upload-button:hover {
+    background: linear-gradient(135deg, #5a6fd8 0%, #6a4190 100%);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.upload-button:active {
+    transform: translateY(0);
+}
+
+.upload-status {
+    display: block;
+    font-size: 0.7rem;
+    color: #666;
+    margin-top: 4px;
+    font-style: italic;
+}
+
+.upload-status.success {
+    color: #28a745;
+}
+
+.upload-status.error {
+    color: #dc3545;
+}
