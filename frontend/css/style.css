@@ -42,6 +42,35 @@ body {
     color: #667eea;
 }
 
+/* チャット履歴メニュー */
+.chat-history-menu {
+    position: fixed;
+    top: 80px;
+    right: 20px;
+    z-index: 1001;
+    background: rgba(255, 255, 255, 0.9);
+    border: none;
+    border-radius: 50%;
+    width: 50px;
+    height: 50px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    transition: all 0.3s ease;
+}
+
+.chat-history-menu:hover {
+    background: rgba(255, 255, 255, 1);
+    transform: scale(1.1);
+}
+
+.chat-history-menu i {
+    font-size: 20px;
+    color: #4CAF50;
+}
+
 /* サイドバー */
 .sidebar {
     position: fixed;
@@ -163,6 +192,334 @@ body {
 .reset-button:hover {
     background: #ff5252;
     transform: translateY(-2px);
+}
+
+/* チャット履歴サイドバー */
+.chat-history-sidebar {
+    position: fixed;
+    top: 0;
+    right: -400px;
+    width: 400px;
+    height: 100vh;
+    background: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(10px);
+    z-index: 1000;
+    transition: right 0.3s ease;
+    box-shadow: -4px 0 20px rgba(0, 0, 0, 0.1);
+    overflow-y: auto;
+}
+
+.chat-history-sidebar.open {
+    right: 0;
+}
+
+.chat-history-content {
+    padding: 20px;
+}
+
+.history-search {
+    position: relative;
+    margin-bottom: 20px;
+}
+
+.history-search input {
+    width: 100%;
+    padding: 10px 40px 10px 15px;
+    border: 1px solid #ddd;
+    border-radius: 25px;
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.3s ease;
+}
+
+.history-search input:focus {
+    border-color: #4CAF50;
+}
+
+.history-search i {
+    position: absolute;
+    right: 15px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #666;
+}
+
+.history-list {
+    max-height: calc(100vh - 200px);
+    overflow-y: auto;
+}
+
+.history-item {
+    background: #f9f9f9;
+    border: 1px solid #e0e0e0;
+    border-radius: 10px;
+    padding: 15px;
+    margin-bottom: 15px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.history-item:hover {
+    background: #f0f8ff;
+    border-color: #4CAF50;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(76, 175, 80, 0.2);
+}
+
+.history-item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.character-name {
+    font-weight: bold;
+    color: #4CAF50;
+    font-size: 1.1rem;
+}
+
+.chat-date {
+    font-size: 0.8rem;
+    color: #666;
+}
+
+.chat-preview {
+    color: #555;
+    font-size: 0.9rem;
+    line-height: 1.4;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+}
+
+.message-count {
+    background: #4CAF50;
+    color: white;
+    font-size: 0.7rem;
+    padding: 2px 6px;
+    border-radius: 10px;
+    margin-left: 10px;
+}
+
+.history-actions {
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid #e0e0e0;
+}
+
+.clear-history-button {
+    width: 100%;
+    padding: 12px;
+    background: #ff6b6b;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    font-size: 16px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.clear-history-button:hover {
+    background: #ff5252;
+    transform: translateY(-2px);
+}
+
+.no-history {
+    text-align: center;
+    padding: 40px 20px;
+    color: #666;
+}
+
+.no-history i {
+    font-size: 3rem;
+    margin-bottom: 15px;
+    color: #ddd;
+}
+
+.no-history p {
+    font-size: 1rem;
+    color: #999;
+}
+
+/* 会話詳細モーダル */
+.conversation-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 2000;
+}
+
+.modal-overlay {
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+}
+
+.modal-content {
+    background: white;
+    border-radius: 15px;
+    width: 100%;
+    max-width: 600px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+}
+
+.modal-header {
+    padding: 20px 25px 15px;
+    border-bottom: 1px solid #e0e0e0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    position: relative;
+}
+
+.modal-header h3 {
+    margin: 0;
+    color: #4CAF50;
+    font-size: 1.3rem;
+}
+
+.modal-date {
+    font-size: 0.9rem;
+    color: #666;
+}
+
+.modal-close {
+    background: none;
+    border: none;
+    font-size: 20px;
+    cursor: pointer;
+    color: #666;
+    padding: 5px;
+    border-radius: 50%;
+    transition: all 0.3s ease;
+}
+
+.modal-close:hover {
+    background: #f0f0f0;
+    color: #333;
+}
+
+.modal-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0;
+}
+
+.conversation-messages {
+    padding: 20px 25px;
+}
+
+.conversation-message {
+    display: flex;
+    margin-bottom: 15px;
+    align-items: flex-start;
+}
+
+.conversation-message.user-message {
+    flex-direction: row-reverse;
+}
+
+.conversation-message .message-avatar {
+    width: 35px;
+    height: 35px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 10px;
+    font-size: 14px;
+}
+
+.user-message .message-avatar {
+    background: #667eea;
+    color: white;
+}
+
+.assistant-message .message-avatar {
+    background: #4CAF50;
+    color: white;
+}
+
+.conversation-message .message-content {
+    flex: 1;
+    max-width: 70%;
+}
+
+.conversation-message .message-text {
+    background: #f5f5f5;
+    padding: 10px 15px;
+    border-radius: 15px;
+    line-height: 1.4;
+    word-wrap: break-word;
+}
+
+.user-message .message-text {
+    background: #667eea;
+    color: white;
+}
+
+.conversation-message .message-timestamp {
+    font-size: 0.7rem;
+    color: #999;
+    margin-top: 5px;
+    text-align: left;
+}
+
+.user-message .message-timestamp {
+    text-align: right;
+}
+
+.no-messages {
+    text-align: center;
+    padding: 40px 20px;
+    color: #666;
+    font-style: italic;
+}
+
+.modal-footer {
+    padding: 15px 25px 20px;
+    border-top: 1px solid #e0e0e0;
+    text-align: right;
+}
+
+.modal-button {
+    background: #4CAF50;
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: background 0.3s ease;
+}
+
+.modal-button:hover {
+    background: #45a049;
+}
+
+@media (max-width: 768px) {
+    .modal-overlay {
+        padding: 10px;
+    }
+    
+    .modal-content {
+        max-height: 90vh;
+    }
+    
+    .conversation-message .message-content {
+        max-width: 85%;
+    }
 }
 
 /* メインコンテンツ */
@@ -294,6 +651,18 @@ body {
     .sidebar {
         width: 100%;
         right: -100%;
+    }
+    
+    .chat-history-sidebar {
+        width: 100%;
+        right: -100%;
+    }
+    
+    .chat-history-menu {
+        top: 70px;
+        right: 10px;
+        width: 45px;
+        height: 45px;
     }
     
     .status-bar {

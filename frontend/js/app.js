@@ -53,11 +53,21 @@ class AIWifeApp {
         this.isTyping = false;
         this.bubbleActive = false;
         
+        // チャット履歴管理
+        this.currentConversation = null;
+        this.conversationMessages = [];
+        
         // UI要素
         this.elements = {
             hamburgerMenu: document.getElementById('hamburgerMenu'),
             sidebar: document.getElementById('sidebar'),
             closeSidebar: document.getElementById('closeSidebar'),
+            chatHistoryMenu: document.getElementById('chatHistoryMenu'),
+            chatHistorySidebar: document.getElementById('chatHistorySidebar'),
+            closeChatHistory: document.getElementById('closeChatHistory'),
+            historyList: document.getElementById('historyList'),
+            historySearch: document.getElementById('historySearch'),
+            clearHistory: document.getElementById('clearHistory'),
             mainContent: document.getElementById('mainContent'),
             characterContainer: document.getElementById('characterContainer'),
             connectionStatus: document.getElementById('connectionStatus'),
@@ -97,6 +107,9 @@ class AIWifeApp {
             this.populateVoiceActors(); // ボイス選択肢を生成
             this.initBlinkTimer(); // ブリンクタイマー初期化
             this.startRenderLoop();
+            
+            // 新しい会話セッションを開始
+            this.startNewConversation();
             
             console.log('AI Wife App initialized successfully');
             
@@ -143,6 +156,12 @@ class AIWifeApp {
         this.elements.hamburgerMenu.addEventListener('click', () => this.toggleSidebar());
         this.elements.closeSidebar.addEventListener('click', () => this.closeSidebar());
         
+        // チャット履歴関連のイベントリスナー
+        this.elements.chatHistoryMenu.addEventListener('click', () => this.toggleChatHistory());
+        this.elements.closeChatHistory.addEventListener('click', () => this.closeChatHistory());
+        this.elements.clearHistory.addEventListener('click', () => this.clearChatHistory());
+        this.elements.historySearch.addEventListener('input', (e) => this.searchChatHistory(e.target.value));
+        
         // 設定変更
         document.getElementById('characterSelect').addEventListener('change', (e) => {
             this.settings.character = e.target.value;
@@ -175,6 +194,8 @@ class AIWifeApp {
         
         document.getElementById('personalitySelect').addEventListener('change', (e) => {
             this.settings.personality = e.target.value;
+            // キャラクター変更時に新しい会話セッションを開始
+            this.startNewConversation();
         });
         
         document.getElementById('memoryToggle').addEventListener('change', (e) => {
@@ -199,6 +220,13 @@ class AIWifeApp {
                 !this.elements.hamburgerMenu.contains(e.target) &&
                 this.elements.sidebar.classList.contains('open')) {
                 this.closeSidebar();
+            }
+            
+            // チャット履歴サイドバー外クリック
+            if (!this.elements.chatHistorySidebar.contains(e.target) && 
+                !this.elements.chatHistoryMenu.contains(e.target) &&
+                this.elements.chatHistorySidebar.classList.contains('open')) {
+                this.closeChatHistory();
             }
             
             // 最初のクリックでAudioContextを初期化
@@ -469,6 +497,9 @@ class AIWifeApp {
         console.log('Sending 3D message:', message);
         console.log('Character personality:', this.settings.personality);
         this.showLoading();
+        
+        // ユーザーメッセージを会話履歴に追加
+        this.addMessageToConversation('user', message);
         
         this.socket.emit('send_message', {
             session_id: this.sessionId,
@@ -962,6 +993,9 @@ class AIWifeApp {
         console.log('[Debug] Tech excited state:', data.is_tech_excited);
         this.hideLoading();
         
+        // AIレスポンスを会話履歴に追加
+        this.addMessageToConversation('assistant', data.text);
+        
         // キャラクター別の音声設定を適用
         this.applyCharacterSettings(data.personality, data.is_tech_excited);
         
@@ -1018,9 +1052,15 @@ class AIWifeApp {
         console.log('[Debug] Received audio response:', data); // ★ デバッグログ追加
         this.hideLoading();
         
-        // 認識テキストをコンソールログ出力
+        // 認識テキストを会話履歴に追加（ユーザーメッセージ）
         if (data.transcribed_text) {
             console.log('Transcribed:', data.transcribed_text);
+            this.addMessageToConversation('user', data.transcribed_text);
+        }
+        
+        // AIレスポンスを会話履歴に追加
+        if (data.response_text) {
+            this.addMessageToConversation('assistant', data.response_text);
         }
         
         // AR吹き出しで応答を表示
@@ -1510,6 +1550,13 @@ class AIWifeApp {
         }, 5000);
     }
     
+    /**
+     * エラートースト表示（showErrorToast関数の追加）
+     */
+    showErrorToast(message) {
+        this.showError(message);
+    }
+    
     hideErrorToast() {
         this.elements.errorToast.style.display = 'none';
     }
@@ -1556,26 +1603,503 @@ class AIWifeApp {
                 const deleteReq = indexedDB.deleteDatabase('AIWifeMemory');
                 deleteReq.onsuccess = () => {
                     console.log('Memory reset successfully');
-                    this.showError('記憶をリセットしました');
+                    this.showErrorToast('記憶をリセットしました');
+                };
+                deleteReq.onerror = () => {
+                    console.error('Failed to reset memory');
+                    this.showErrorToast('記憶のリセットに失敗しました');
                 };
             }
             
+            // 会話履歴をクリア
+            this.conversationMessages = [];
+            
             // 新しいセッションIDを生成
             this.sessionId = this.generateSessionId();
+            console.log('New session started after memory reset:', this.sessionId);
             
-            // チャット履歴をクリア
-            this.elements.chatMessages.innerHTML = `
-                <div class="message assistant-message">
-                    <div class="message-avatar">
-                        <i class="fas fa-robot"></i>
-                    </div>
-                    <div class="message-content">
-                        <div class="message-text">こんにちは！私はあなたのAI Wifeです。何かお話ししましょう！</div>
-                        <div class="message-timestamp">今</div>
-                    </div>
+            // 成功メッセージ
+            this.showErrorToast('記憶をリセットしました');
+        }
+    }
+
+    /**
+     * チャット履歴サイドバーを開閉
+     */
+    toggleChatHistory() {
+        this.elements.chatHistorySidebar.classList.toggle('open');
+        if (this.elements.chatHistorySidebar.classList.contains('open')) {
+            this.loadChatHistory();
+        }
+    }
+
+    /**
+     * チャット履歴サイドバーを閉じる
+     */
+    closeChatHistory() {
+        this.elements.chatHistorySidebar.classList.remove('open');
+    }
+
+    /**
+     * IndexedDBからチャット履歴を読み込み
+     */
+    async loadChatHistory() {
+        try {
+            const history = await this.getChatHistoryFromDB();
+            this.displayChatHistory(history);
+        } catch (error) {
+            console.error('Error loading chat history:', error);
+            this.showErrorToast('チャット履歴の読み込みに失敗しました');
+        }
+    }
+
+    /**
+     * IndexedDBからチャット履歴を取得
+     */
+    getChatHistoryFromDB() {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open('AIWifeMemory', 2); // バージョンを2に統一
+            
+            request.onerror = () => reject(request.error);
+            
+            request.onsuccess = () => {
+                const db = request.result;
+                
+                if (!db.objectStoreNames.contains('conversations')) {
+                    resolve([]);
+                    return;
+                }
+                
+                const transaction = db.transaction(['conversations'], 'readonly');
+                const store = transaction.objectStore('conversations');
+                const getAllRequest = store.getAll();
+                
+                getAllRequest.onsuccess = () => {
+                    const conversations = getAllRequest.result || [];
+                    // 日付順でソート（新しい順）
+                    conversations.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+                    resolve(conversations);
+                };
+                
+                getAllRequest.onerror = () => reject(getAllRequest.error);
+            };
+            
+            request.onupgradeneeded = (event) => {
+                const db = event.target.result;
+                
+                // 既存のストアを削除して再作成
+                if (db.objectStoreNames.contains('conversations')) {
+                    db.deleteObjectStore('conversations');
+                }
+                
+                // 新しいストアを作成
+                const store = db.createObjectStore('conversations', { keyPath: 'id', autoIncrement: true });
+                store.createIndex('timestamp', 'timestamp', { unique: false });
+                store.createIndex('personality', 'personality', { unique: false });
+                store.createIndex('sessionId', 'sessionId', { unique: false });
+                
+                console.log('IndexedDB schema updated for getChatHistoryFromDB');
+            };
+        });
+    }
+
+    /**
+     * チャット履歴を表示
+     */
+    displayChatHistory(conversations) {
+        const historyList = this.elements.historyList;
+        historyList.innerHTML = '';
+
+        if (conversations.length === 0) {
+            historyList.innerHTML = `
+                <div class="no-history">
+                    <i class="fas fa-comments"></i>
+                    <p>まだチャット履歴がありません</p>
                 </div>
             `;
+            return;
         }
+
+        conversations.forEach(conversation => {
+            const historyItem = this.createHistoryItem(conversation);
+            historyList.appendChild(historyItem);
+        });
+    }
+
+    /**
+     * 履歴アイテムを作成
+     */
+    createHistoryItem(conversation) {
+        const item = document.createElement('div');
+        item.className = 'history-item';
+        
+        const characterName = this.getCharacterDisplayName(conversation.personality);
+        const date = new Date(conversation.timestamp).toLocaleDateString('ja-JP', {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+        
+        const messageCount = conversation.messages ? conversation.messages.length : 0;
+        const preview = this.getConversationPreview(conversation);
+        
+        item.innerHTML = `
+            <div class="history-item-header">
+                <div class="character-name">${characterName}</div>
+                <div class="chat-date">${date}</div>
+            </div>
+            <div class="chat-preview">${preview}</div>
+            <div class="message-count">${messageCount}件</div>
+        `;
+        
+        item.addEventListener('click', () => this.loadConversation(conversation));
+        
+        return item;
+    }
+
+    /**
+     * キャラクター表示名を取得
+     */
+    getCharacterDisplayName(personality) {
+        const names = {
+            'rei_engineer': 'レイ (AIエンジニア)',
+            'yui_natural': 'ユイ (天然な癒し系)',
+            'friendly': '汎用 - 親しみやすい',
+            'shy': '汎用 - 内気',
+            'energetic': '汎用 - 元気',
+            'calm': '汎用 - 落ち着いた'
+        };
+        return names[personality] || personality;
+    }
+
+    /**
+     * 会話のプレビューを取得
+     */
+    getConversationPreview(conversation) {
+        if (!conversation.messages || conversation.messages.length === 0) {
+            return '会話が開始されていません';
+        }
+        
+        const lastMessage = conversation.messages[conversation.messages.length - 1];
+        return lastMessage.text.length > 50 
+            ? lastMessage.text.substring(0, 50) + '...'
+            : lastMessage.text;
+    }
+
+    /**
+     * 会話を読み込んで詳細表示
+     */
+    loadConversation(conversation) {
+        console.log('Loading conversation:', conversation);
+        
+        // 会話詳細をモーダルで表示
+        this.showConversationDetail(conversation);
+    }
+
+    /**
+     * 会話詳細をモーダルで表示
+     */
+    showConversationDetail(conversation) {
+        // 既存のモーダルがあれば削除
+        const existingModal = document.getElementById('conversationModal');
+        if (existingModal) {
+            existingModal.remove();
+        }
+
+        // モーダルHTML作成
+        const modal = document.createElement('div');
+        modal.id = 'conversationModal';
+        modal.className = 'conversation-modal';
+        
+        const characterName = this.getCharacterDisplayName(conversation.personality);
+        const date = new Date(conversation.timestamp).toLocaleString('ja-JP', {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+
+        let messagesHtml = '';
+        if (conversation.messages && conversation.messages.length > 0) {
+            messagesHtml = conversation.messages.map(msg => {
+                const msgDate = new Date(msg.timestamp).toLocaleTimeString('ja-JP', {
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+                const roleClass = msg.role === 'user' ? 'user-message' : 'assistant-message';
+                const roleIcon = msg.role === 'user' ? 'fas fa-user' : 'fas fa-robot';
+                
+                return `
+                    <div class="conversation-message ${roleClass}">
+                        <div class="message-avatar">
+                            <i class="${roleIcon}"></i>
+                        </div>
+                        <div class="message-content">
+                            <div class="message-text">${msg.text}</div>
+                            <div class="message-timestamp">${msgDate}</div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        } else {
+            messagesHtml = '<div class="no-messages">メッセージがありません</div>';
+        }
+
+        modal.innerHTML = `
+            <div class="modal-overlay" onclick="this.parentElement.remove()">
+                <div class="modal-content" onclick="event.stopPropagation()">
+                    <div class="modal-header">
+                        <h3>${characterName}との会話</h3>
+                        <div class="modal-date">${date}</div>
+                        <button class="modal-close" onclick="this.closest('.conversation-modal').remove()">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="conversation-messages">
+                            ${messagesHtml}
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="modal-button" onclick="this.closest('.conversation-modal').remove()">
+                            閉じる
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(modal);
+    }
+
+    /**
+     * チャット履歴を検索
+     */
+    searchChatHistory(searchTerm) {
+        const historyItems = this.elements.historyList.querySelectorAll('.history-item');
+        
+        historyItems.forEach(item => {
+            const text = item.textContent.toLowerCase();
+            const isVisible = text.includes(searchTerm.toLowerCase());
+            item.style.display = isVisible ? 'block' : 'none';
+        });
+    }
+
+    /**
+     * チャット履歴をクリア
+     */
+    async clearChatHistory() {
+        if (!confirm('すべてのチャット履歴を削除しますか？この操作は取り消せません。')) {
+            return;
+        }
+        
+        try {
+            await this.clearChatHistoryFromDB();
+            this.loadChatHistory();
+            this.showErrorToast('チャット履歴をクリアしました');
+        } catch (error) {
+            console.error('Error clearing chat history:', error);
+            this.showErrorToast('チャット履歴のクリアに失敗しました');
+        }
+    }
+
+    /**
+     * IndexedDBからチャット履歴を削除
+     */
+    clearChatHistoryFromDB() {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open('AIWifeMemory', 2); // バージョンを2に統一
+            
+            request.onerror = () => reject(request.error);
+            
+            request.onsuccess = () => {
+                const db = request.result;
+                
+                if (!db.objectStoreNames.contains('conversations')) {
+                    resolve();
+                    return;
+                }
+                
+                const transaction = db.transaction(['conversations'], 'readwrite');
+                const store = transaction.objectStore('conversations');
+                const clearRequest = store.clear();
+                
+                clearRequest.onsuccess = () => {
+                    console.log('Chat history cleared from IndexedDB');
+                    resolve();
+                };
+                clearRequest.onerror = () => reject(clearRequest.error);
+            };
+            
+            request.onupgradeneeded = (event) => {
+                const db = event.target.result;
+                
+                // 既存のストアを削除して再作成
+                if (db.objectStoreNames.contains('conversations')) {
+                    db.deleteObjectStore('conversations');
+                }
+                
+                // 新しいストアを作成
+                const store = db.createObjectStore('conversations', { keyPath: 'id', autoIncrement: true });
+                store.createIndex('timestamp', 'timestamp', { unique: false });
+                store.createIndex('personality', 'personality', { unique: false });
+                store.createIndex('sessionId', 'sessionId', { unique: false });
+                
+                console.log('IndexedDB schema updated for clearChatHistoryFromDB');
+            };
+        });
+    }
+
+    /**
+     * 会話にメッセージを追加してIndexedDBに保存
+     */
+    addMessageToConversation(role, text) {
+        if (!this.settings.memoryEnabled) {
+            return; // 記憶機能が無効の場合は保存しない
+        }
+
+        const message = {
+            role: role,
+            text: text,
+            timestamp: new Date().toISOString()
+        };
+
+        this.conversationMessages.push(message);
+        console.log('Added message to conversation:', message);
+
+        // 定期的に会話をIndexedDBに保存（5メッセージごと、または1分間隔）
+        this.scheduleConversationSave();
+    }
+
+    /**
+     * 会話保存のスケジューリング
+     */
+    scheduleConversationSave() {
+        if (this.saveTimeout) {
+            clearTimeout(this.saveTimeout);
+        }
+
+        // 1秒後に保存（連続する操作をバッチ処理）
+        this.saveTimeout = setTimeout(() => {
+            this.saveConversationToDB();
+        }, 1000);
+    }
+
+    /**
+     * 現在の会話をIndexedDBに保存
+     */
+    async saveConversationToDB() {
+        if (this.conversationMessages.length === 0) {
+            console.log('No messages to save');
+            return;
+        }
+
+        try {
+            const conversation = {
+                personality: this.settings.personality,
+                messages: [...this.conversationMessages],
+                timestamp: new Date().toISOString(),
+                sessionId: this.sessionId
+            };
+
+            console.log('Saving conversation to IndexedDB:', conversation);
+            await this.storeConversationInDB(conversation);
+            console.log('Conversation successfully saved to IndexedDB');
+        } catch (error) {
+            console.error('Failed to save conversation:', error);
+        }
+    }
+
+    /**
+     * 会話をIndexedDBに保存
+     */
+    storeConversationInDB(conversation) {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open('AIWifeMemory', 2); // バージョンを2に上げる
+            
+            request.onerror = () => reject(request.error);
+            
+            request.onsuccess = () => {
+                const db = request.result;
+                const transaction = db.transaction(['conversations'], 'readwrite');
+                const store = transaction.objectStore('conversations');
+                
+                // セッションIDで既存の会話を検索（インデックスを使わずに全件取得して検索）
+                const getAllRequest = store.getAll();
+                
+                getAllRequest.onsuccess = () => {
+                    const allConversations = getAllRequest.result;
+                    const existingConversation = allConversations.find(conv => 
+                        conv.sessionId === conversation.sessionId && 
+                        conv.personality === conversation.personality
+                    );
+                    
+                    if (existingConversation) {
+                        // 既存の会話を更新（同一セッション・同一キャラクターのみ）
+                        existingConversation.messages = conversation.messages;
+                        existingConversation.timestamp = conversation.timestamp;
+                        const updateRequest = store.put(existingConversation);
+                        updateRequest.onsuccess = () => {
+                            console.log('Conversation updated in IndexedDB');
+                            resolve(updateRequest.result);
+                        };
+                        updateRequest.onerror = () => reject(updateRequest.error);
+                    } else {
+                        // 新しい会話を追加
+                        const addRequest = store.add(conversation);
+                        addRequest.onsuccess = () => {
+                            console.log('New conversation added to IndexedDB');
+                            resolve(addRequest.result);
+                        };
+                        addRequest.onerror = () => reject(addRequest.error);
+                    }
+                };
+                
+                getAllRequest.onerror = () => reject(getAllRequest.error);
+            };
+            
+            request.onupgradeneeded = (event) => {
+                const db = event.target.result;
+                
+                // 既存のストアを削除して再作成
+                if (db.objectStoreNames.contains('conversations')) {
+                    db.deleteObjectStore('conversations');
+                }
+                
+                // 新しいストアを作成
+                const store = db.createObjectStore('conversations', { keyPath: 'id', autoIncrement: true });
+                store.createIndex('timestamp', 'timestamp', { unique: false });
+                store.createIndex('personality', 'personality', { unique: false });
+                store.createIndex('sessionId', 'sessionId', { unique: false });
+                
+                console.log('IndexedDB schema updated with sessionId index');
+            };
+        });
+    }
+
+    /**
+     * 新しい会話セッションを開始
+     */
+    startNewConversation() {
+        // 現在の会話を保存（まだ保存されていない場合）
+        if (this.conversationMessages.length > 0) {
+            this.saveConversationToDB();
+        }
+
+        // 新しいセッションを開始
+        this.sessionId = this.generateSessionId();
+        this.conversationMessages = [];
+        
+        // 保存タイムアウトをクリア
+        if (this.saveTimeout) {
+            clearTimeout(this.saveTimeout);
+            this.saveTimeout = null;
+        }
+        
+        console.log('Started new conversation session:', this.sessionId);
     }
     
     /**
