@@ -81,7 +81,7 @@ class AIWifeApp {
         this.settings = {
             character: 'avatar.vrm',
             animation: 'animation.vrma',
-            voiceActorId: null, // ★ 初期値をnullに変更
+            voiceId: null, // ★ voiceActorIdからvoiceIdに変更
             volume: 0.7,
             voiceSpeed: 1.0,
             personality: 'rei_engineer', // デフォルトをレイに変更
@@ -105,6 +105,10 @@ class AIWifeApp {
             await this.loadCharacter();
             this.loadSettings();
             this.populateVoiceActors(); // ボイス選択肢を生成
+            
+            // キャラクター別のデフォルト音声を設定
+            this.setCharacterDefaultVoice(this.settings.personality);
+            
             this.initBlinkTimer(); // ブリンクタイマー初期化
             this.startRenderLoop();
             
@@ -115,7 +119,7 @@ class AIWifeApp {
             
             // 初期化完了後にレイに挨拶
             setTimeout(() => {
-                this.send3DMessage('初めまして！');
+                // this.send3DMessage('初めまして！');
             }, 2000); // 2秒後に挨拶
         } catch (error) {
             console.error('Failed to initialize app:', error);
@@ -174,7 +178,7 @@ class AIWifeApp {
         });
 
         document.getElementById('voiceActorSelect').addEventListener('change', (e) => {
-            this.settings.voiceActorId = e.target.value;
+            this.settings.voiceId = e.target.value;
         });
         
         document.getElementById('backgroundSelect').addEventListener('change', (e) => {
@@ -194,6 +198,10 @@ class AIWifeApp {
         
         document.getElementById('personalitySelect').addEventListener('change', (e) => {
             this.settings.personality = e.target.value;
+            
+            // キャラクター別のデフォルト音声を設定
+            this.setCharacterDefaultVoice(e.target.value);
+            
             // キャラクター変更時に新しい会話セッションを開始
             this.startNewConversation();
         });
@@ -504,7 +512,7 @@ class AIWifeApp {
         this.socket.emit('send_message', {
             session_id: this.sessionId,
             message: message,
-            voice_actor_id: this.settings.voiceActorId,
+            voice_id: this.settings.voiceId,
             personality: this.settings.personality // キャラクター情報を追加
         });
     }
@@ -1008,8 +1016,8 @@ class AIWifeApp {
         }
         
         // 音声再生
-        if (data.audio_url) {
-            this.playAudio(data.audio_url);
+        if (data.audio_data) {
+            this.playAudioData(data.audio_data);
         }
     }
     
@@ -1072,8 +1080,8 @@ class AIWifeApp {
         }
         
         // 音声再生
-        if (data.audio_url) {
-            this.playAudio(data.audio_url);
+        if (data.audio_data) {
+            this.playAudioData(data.audio_data);
         }
     }
     
@@ -1180,7 +1188,7 @@ class AIWifeApp {
             this.socket.emit('send_audio', {
                 session_id: this.sessionId,
                 audio_data: audioData.map(b => b.toString(16).padStart(2, '0')).join(''),
-                voice_actor_id: this.settings.voiceActorId
+                voice_id: this.settings.voiceId
             });
             
         } catch (error) {
@@ -1264,6 +1272,83 @@ class AIWifeApp {
 
         } catch (error) {
             console.error('Error in playAudio:', error);
+            console.log('[Debug] Using fallback lip sync animation due to error');
+            this.simulateBasicLipSync();
+            this.showError('音声処理でエラーが発生しました。');
+        }
+    }
+    
+    /**
+     * Base64エンコードされた音声データを再生
+     */
+    playAudioData(audioData) {
+        console.log('[Debug] playAudioData called with data:', audioData ? 'Data received' : 'No data');
+        try {
+            if (!audioData) {
+                console.log('[Debug] No audio data provided. Skipping playback.');
+                return;
+            }
+
+            // Base64データから音声オブジェクトを作成
+            const audio = new Audio(audioData);
+            console.log('[Debug] Created Audio object from base64 data');
+
+            audio.volume = this.settings.volume;
+            audio.playbackRate = this.settings.voiceSpeed;
+
+            // 音声ロード完了後にリップシンクセットアップ
+            audio.addEventListener('loadeddata', () => {
+                console.log('[Debug] Audio loaded successfully, setting up lip sync');
+                try {
+                    this.setupLipSync(audio);
+                } catch (error) {
+                    console.warn('Lip sync setup failed, using fallback:', error);
+                    this.simulateBasicLipSync();
+                }
+            });
+
+            // 音声再生開始
+            audio.addEventListener('play', () => {
+                console.log('[Debug] Audio playback started');
+            });
+
+            // 音声再生終了時のクリーンアップ
+            audio.addEventListener('ended', () => {
+                console.log('[Debug] Audio playback ended');
+                this.lipSyncWeight = 0.0;
+                if (this.vrm && this.vrm.expressionManager) {
+                    // リップシンク関連の値をリセット
+                    this.vrm.expressionManager.setValue('aa', 0);
+                    this.vrm.expressionManager.setValue('ih', 0);
+                    this.vrm.expressionManager.setValue('ou', 0);
+                    
+                    // 表情をneutralに戻す
+                    setTimeout(() => {
+                        this.setExpression('neutral');
+                        console.log('[Debug] Expression reset to neutral after audio ended');
+                    }, 500); // 0.5秒後にneutralに戻す
+                }
+            });
+
+            // エラーハンドリング
+            audio.addEventListener('error', (e) => {
+                console.error('[Debug] Audio error:', e);
+                console.log('[Debug] Falling back to basic lip sync animation');
+                this.simulateBasicLipSync();
+            });
+
+            console.log('[Debug] Attempting to play audio...');
+            audio.play().then(() => {
+                console.log('[Debug] Audio play() promise resolved successfully');
+            }).catch(error => {
+                console.error('Failed to play audio:', error);
+                console.log('[Debug] Using fallback lip sync animation');
+                this.simulateBasicLipSync();
+                this.showError('音声の再生に失敗しました。リップシンクのみ実行します。');
+            });
+
+        } catch (error) {
+            console.error('Error in playAudioData:', error);
             console.log('[Debug] Using fallback lip sync animation due to error');
             this.simulateBasicLipSync();
             this.showError('音声処理でエラーが発生しました。');
@@ -1432,11 +1517,11 @@ class AIWifeApp {
     }
     
     /**
-     * にじボイスのキャラクター一覧を読み込んでUIに反映
+     * ElevenLabsの音声一覧を読み込んでUIに反映
      */
     async populateVoiceActors() {
         try {
-            const response = await fetch('/api/voice-actors');
+            const response = await fetch('/api/voices');
             if (!response.ok) {
                 throw new Error(`API request failed with status ${response.status}`);
             }
@@ -1445,21 +1530,25 @@ class AIWifeApp {
             
             selectElement.innerHTML = '';
 
-            if (data.voiceActors && data.voiceActors.length > 0) {
-                // ★★★★★ ここからが重要 ★★★★★
-                // 1. デフォルトのボイスIDを、リストの最初の有効なIDに設定する
-                if (!this.settings.voiceActorId) {
-                    this.settings.voiceActorId = data.voiceActors[0].id;
-                    console.log(`[Debug] Default voice actor ID set to: ${this.settings.voiceActorId}`);
+            if (data.voices && data.voices.length > 0) {
+                // キャラクター別のデフォルト音声がない場合のみ、APIのデフォルトを使用
+                if (!this.settings.voiceId) {
+                    // キャラクター別のデフォルト音声を先に試行
+                    this.setCharacterDefaultVoice(this.settings.personality);
+                    
+                    // まだ設定されていない場合はAPIのデフォルトを使用
+                    if (!this.settings.voiceId) {
+                        this.settings.voiceId = data.default_voice_id || data.voices[0].id;
+                        console.log(`[Debug] Fallback voice ID set to: ${this.settings.voiceId}`);
+                    }
                 }
-                // ★★★★★ ここまで ★★★★★
 
                 // Populate new options
-                data.voiceActors.forEach(actor => {
+                data.voices.forEach(voice => {
                     const option = document.createElement('option');
-                    option.value = actor.id;
-                    option.textContent = `${actor.name} (${actor.gender}, ${actor.age}歳)`;
-                    if (actor.id === this.settings.voiceActorId) {
+                    option.value = voice.id;
+                    option.textContent = `${voice.name} (${voice.category})`;
+                    if (voice.id === this.settings.voiceId) {
                         option.selected = true;
                     }
                     selectElement.appendChild(option);
@@ -1470,6 +1559,27 @@ class AIWifeApp {
         } catch (error) {
             console.error('Failed to populate voice actors:', error);
             this.showError('ボイス一覧の取得に失敗しました');
+        }
+    }
+    
+    /**
+     * キャラクター別のデフォルト音声を設定
+     */
+    setCharacterDefaultVoice(personality) {
+        const characterVoices = {
+            'rei_engineer': 'cgSgspJ2msm6clMCkdW9', // Jessica
+            'yui_natural': 'Xb7hH8MSUJpSbSDYk0k2'  // 指定された音声ID
+        };
+        
+        if (characterVoices[personality]) {
+            this.settings.voiceId = characterVoices[personality];
+            console.log(`[Debug] Character voice set to: ${this.settings.voiceId} for ${personality}`);
+            
+            // 音声選択UIを更新
+            const voiceSelect = document.getElementById('voiceActorSelect');
+            if (voiceSelect) {
+                voiceSelect.value = this.settings.voiceId;
+            }
         }
     }
     

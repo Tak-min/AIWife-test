@@ -15,6 +15,9 @@ from datetime import datetime
 import logging
 import time
 from typing import Dict, List, Optional
+from elevenlabs.client import ElevenLabs
+import tempfile
+import base64
 
 # Suppress only the single InsecureRequestWarning from urllib3 needed.
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -38,11 +41,16 @@ primary_model = genai.GenerativeModel(os.getenv('GEMINI_PRIMARY_MODEL', 'gemini-
 fallback_model = genai.GenerativeModel(os.getenv('GEMINI_FALLBACK_MODEL', 'gemini-1.0-pro'))
 
 # API Configuration
-NIJIVOICE_API_KEY = os.getenv('NIJIVOICE_API_KEY')
+ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY')
 ASSEMBLYAI_API_KEY = os.getenv('ASSEMBLYAI_API_KEY')
 
-# グローバル変数でボイスアクターのキャッシュを持つ
-VOICE_ACTORS_CACHE = []
+# ElevenLabs client initialization
+elevenlabs_client = None
+if ELEVENLABS_API_KEY:
+    elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+
+# グローバル変数で利用可能な音声を管理
+AVAILABLE_VOICES = []
 
 # データベースパスを現在のディレクトリからの相対パスで設定
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -333,118 +341,91 @@ class AIConversationManager:
             raise Exception(f"Gemini API error: {e}")
 
 class TTSManager:
-    """音声合成システムの管理クラス"""
-    
-    BASE_URL = "https://api.nijivoice.com/api/platform/v1"
+    """ElevenLabs音声合成システムの管理クラス"""
     
     @staticmethod
-    def get_valid_voice_actor_id() -> Optional[str]:
-        """有効なVoice Actor IDを取得"""
-        global VOICE_ACTORS_CACHE
+    def get_available_voices() -> List[Dict]:
+        """利用可能な音声一覧を取得"""
+        global AVAILABLE_VOICES
         
-        # キャッシュから最初の有効なIDを取得
-        if VOICE_ACTORS_CACHE:
-            return VOICE_ACTORS_CACHE[0]['id']
-        
-        # キャッシュがない場合、APIから取得を試行
-        if not NIJIVOICE_API_KEY:
-            logger.error("NIJIVOICE_API_KEY is not set.")
-            return None
-            
-        headers = {
-            "x-api-key": NIJIVOICE_API_KEY,
-            "accept": "application/json"
-        }
-        url = f"{TTSManager.BASE_URL}/voice-actors"
+        if not elevenlabs_client:
+            logger.error("ElevenLabs client not initialized. Check API key.")
+            return []
         
         try:
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()
+            if not AVAILABLE_VOICES:  # キャッシュがない場合のみAPI呼び出し
+                voices = elevenlabs_client.voices.get_all()
+                AVAILABLE_VOICES = [
+                    {
+                        'id': voice.voice_id,
+                        'name': voice.name,
+                        'category': voice.category if hasattr(voice, 'category') else 'general',
+                        'description': voice.description if hasattr(voice, 'description') else voice.name
+                    }
+                    for voice in voices.voices
+                ]
+                logger.info(f"Successfully cached {len(AVAILABLE_VOICES)} ElevenLabs voices.")
             
-            data = response.json()
-            if "voiceActors" in data and data["voiceActors"]:
-                VOICE_ACTORS_CACHE = data["voiceActors"]
-                return data["voiceActors"][0]['id']
+            return AVAILABLE_VOICES
         except Exception as e:
-            logger.error(f"Failed to get voice actors: {e}")
-        
-        return None
+            logger.error(f"Failed to get ElevenLabs voices: {e}")
+            return []
     
     @staticmethod
-    def synthesize_speech(text: str, voice_actor_id: str = None) -> Optional[str]:
-        """にじボイス APIで音声合成し、音声ファイルのURLを返す"""
-        if not NIJIVOICE_API_KEY:
-            logger.error("NIJIVOICE_API_KEY is not set.")
+    def get_default_voice_id() -> Optional[str]:
+        """デフォルトの音声IDを取得"""
+        voices = TTSManager.get_available_voices()
+        
+        if not voices:
+            # ElevenLabsのデフォルト音声ID（Rachel）
+            return "21m00Tcm4TlvDq8ikWAM"
+        
+        # 最初の利用可能な音声を返す
+        return voices[0]['id']
+    
+    @staticmethod
+    def synthesize_speech(text: str, voice_id: str = None) -> Optional[str]:
+        """ElevenLabs APIで音声合成し、音声データをBase64エンコードして返す"""
+        if not elevenlabs_client:
+            logger.error("ElevenLabs client not initialized. Check API key.")
             return None
         
-        # Voice Actor IDが指定されていない場合は取得
-        if not voice_actor_id:
-            voice_actor_id = TTSManager.get_valid_voice_actor_id()
-            if not voice_actor_id:
-                logger.error("No valid voice actor ID available")
+        # 音声IDが指定されていない場合はデフォルトを使用
+        if not voice_id:
+            voice_id = TTSManager.get_default_voice_id()
+            if not voice_id:
+                logger.error("No valid voice ID available")
                 return None
-            
-        headers = {
-            "x-api-key": NIJIVOICE_API_KEY,
-            "Content-Type": "application/json"
-        }
-        
-        # APIドキュメントに基づいて正しいパラメータ名を使用
-        payload = {
-            "script": text,
-            "speed": "1.0",
-            "format": "mp3"
-        }
-        
-        url = f"{TTSManager.BASE_URL}/voice-actors/{voice_actor_id}/generate-voice"
         
         try:
-            logger.info(f"Sending request to: {url}")
-            logger.info(f"Payload: {payload}")
+            logger.info(f"Synthesizing speech with voice ID: {voice_id}")
+            logger.info(f"Text: {text[:100]}...")  # 最初の100文字のみログ
             
-            response = requests.post(url, headers=headers, json=payload)
+            # ElevenLabs APIで音声合成
+            audio_generator = elevenlabs_client.text_to_speech.convert(
+                text=text,
+                voice_id=voice_id,
+                model_id="eleven_multilingual_v2",  # 多言語対応モデル
+                output_format="mp3_44100_128"
+            )
             
-            # レスポンスの詳細をログに記録
-            logger.info(f"Response status: {response.status_code}")
-            logger.info(f"Response headers: {response.headers}")
+            # 音声データを収集
+            audio_data = b""
+            for chunk in audio_generator:
+                audio_data += chunk
             
-            if response.status_code == 404:
-                logger.error(f"Voice actor ID not found: {voice_actor_id}")
+            if not audio_data:
+                logger.error("No audio data received from ElevenLabs")
                 return None
             
-            response.raise_for_status()
+            # Base64エンコードして返す
+            audio_b64 = base64.b64encode(audio_data).decode('utf-8')
+            logger.info(f"Successfully synthesized speech. Audio size: {len(audio_data)} bytes")
             
-            response_json = response.json()
-            logger.info(f"Response JSON: {response_json}")
+            return f"data:audio/mpeg;base64,{audio_b64}"
             
-            # レスポンスの構造に応じて適切なキーを使用
-            # NijiVoice APIの実際のレスポンス構造に基づく
-            audio_url = None
-            
-            # ネストされた構造をチェック
-            if 'generatedVoice' in response_json:
-                generated_voice = response_json['generatedVoice']
-                audio_url = generated_voice.get('audioFileUrl') or generated_voice.get('audioFileDownloadUrl')
-            
-            # フラットな構造もチェック（フォールバック）
-            if not audio_url:
-                audio_url = response_json.get("audioFileUrl") or response_json.get("url") or response_json.get("audio_url")
-            
-            if not audio_url:
-                logger.error(f"No audio URL found in response: {response_json}")
-                return None
-                
-            logger.info(f"Successfully got audio URL: {audio_url}")
-            return audio_url
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"NijiVoice API error: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                logger.error(f"Response status: {e.response.status_code}")
-                logger.error(f"Response text: {e.response.text}")
-            return None
         except Exception as e:
-            logger.error(f"NijiVoice synthesis error: {e}")
+            logger.error(f"ElevenLabs synthesis error: {e}")
             return None
 
 class STTManager:
@@ -536,44 +517,25 @@ def serve_backgrounds(filename):
     return send_from_directory('../frontend/backgrounds', filename)
 
 
-@app.route('/api/voice-actors')
-def get_voice_actors():
-    """にじボイスのキャラクター一覧を取得し、キャッシュする"""
-    global VOICE_ACTORS_CACHE
-    if not NIJIVOICE_API_KEY:
-        return jsonify({"error": "NijiVoice API key not configured"}), 500
+@app.route('/api/voices')
+def get_voices():
+    """ElevenLabsの音声一覧を取得"""
+    if not elevenlabs_client:
+        return jsonify({"error": "ElevenLabs API key not configured"}), 500
 
-    headers = {
-        "x-api-key": NIJIVOICE_API_KEY,
-        "accept": "application/json"
-    }
-    url = f"{TTSManager.BASE_URL}/voice-actors"
-    
     try:
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
+        voices = TTSManager.get_available_voices()
         
-        data = response.json()
-        # 取得したデータをキャッシュに保存
-        if "voiceActors" in data and data["voiceActors"]:
-            VOICE_ACTORS_CACHE = data["voiceActors"]
-            logger.info(f"Successfully cached {len(VOICE_ACTORS_CACHE)} voice actors.")
+        if not voices:
+            return jsonify({"error": "No voices available"}), 500
         
-        return jsonify(data)
+        return jsonify({
+            "voices": voices,
+            "default_voice_id": TTSManager.get_default_voice_id()
+        })
 
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to get voice actors from NijiVoice API: {e}")
-        # エラーレスポンスをより詳細に返す
-        error_details = {"error": "Failed to fetch voice actors from external API."}
-        if e.response is not None:
-            error_details["status_code"] = e.response.status_code
-            try:
-                error_details["details"] = e.response.json()
-            except ValueError:
-                error_details["details"] = e.response.text
-        return jsonify(error_details), 502
     except Exception as e:
-        logger.error(f"Exception in get_voice_actors: {e}")
+        logger.error(f"Exception in get_voices: {e}")
         return jsonify({"error": "An internal error occurred"}), 500
 
 
@@ -610,15 +572,15 @@ def handle_message(data):
         loop.close()
 
         # 音声合成
-        voice_actor_id = data.get('voice_actor_id')
-        audio_url = tts_manager.synthesize_speech(response['text'], voice_actor_id=voice_actor_id)
+        voice_id = data.get('voice_id')
+        audio_data = tts_manager.synthesize_speech(response['text'], voice_id=voice_id)
         
         # レスポンス送信（追加情報も含める）
         emit('message_response', {
             'text': response['text'],
             'emotion': response['emotion'],
             'user_emotion': response['user_emotion'],
-            'audio_url': audio_url,
+            'audio_data': audio_data,  # audio_urlからaudio_dataに変更
             'timestamp': datetime.now().isoformat(),
             'personality': personality,  # キャラクター情報を返す
             'is_tech_excited': response.get('is_tech_excited', False)  # 技術興奮状態
@@ -653,8 +615,8 @@ def handle_audio(data):
         loop.close()
 
         # 音声合成
-        voice_actor_id = data.get('voice_actor_id')
-        audio_url = tts_manager.synthesize_speech(response['text'], voice_actor_id=voice_actor_id)
+        voice_id = data.get('voice_id')
+        audio_data = tts_manager.synthesize_speech(response['text'], voice_id=voice_id)
         
         # レスポンス送信
         emit('audio_response', {
@@ -662,48 +624,13 @@ def handle_audio(data):
             'response_text': response['text'],
             'emotion': response['emotion'],
             'user_emotion': response['user_emotion'],
-            'audio_url': audio_url,
+            'audio_data': audio_data,  # audio_urlからaudio_dataに変更
             'timestamp': datetime.now().isoformat()
         })
         
     except Exception as e:
         logger.error(f"Error handling audio: {e}")
         emit('error', {'message': '音声の処理中にエラーが発生しました。'})
-
-@app.route('/api/proxy-audio')
-def proxy_audio():
-    """音声ファイルのプロキシエンドポイント（CORS回避）"""
-    try:
-        audio_url = request.args.get('url')
-        if not audio_url:
-            return jsonify({'error': 'URL parameter is required'}), 400
-        
-        # 外部音声ファイルをダウンロード
-        response = requests.get(audio_url, stream=True, timeout=30)
-        response.raise_for_status()
-        
-        # Content-Typeを設定してレスポンス
-        content_type = response.headers.get('Content-Type', 'audio/mpeg')
-        
-        def generate():
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    yield chunk
-        
-        from flask import Response
-        return Response(
-            generate(),
-            content_type=content_type,
-            headers={
-                'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Methods': 'GET',
-                'Cache-Control': 'public, max-age=3600'
-            }
-        )
-        
-    except Exception as e:
-        logger.error(f"Error proxying audio: {e}")
-        return jsonify({'error': 'Failed to proxy audio file'}), 500
 
 @app.route('/api/health')
 def health_check():
