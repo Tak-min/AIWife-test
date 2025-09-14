@@ -34,8 +34,8 @@ logger = logging.getLogger(__name__)
 
 # Configure Gemini AI
 genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
-primary_model = genai.GenerativeModel(os.getenv('GEMINI_PRIMARY_MODEL', 'gemini-2.5-flash'))
-fallback_model = genai.GenerativeModel(os.getenv('GEMINI_FALLBACK_MODEL', 'gemini-2.0-flash'))
+primary_model = genai.GenerativeModel(os.getenv('GEMINI_PRIMARY_MODEL', 'gemini-1.5-flash'))
+fallback_model = genai.GenerativeModel(os.getenv('GEMINI_FALLBACK_MODEL', 'gemini-1.0-pro'))
 
 # API Configuration
 NIJIVOICE_API_KEY = os.getenv('NIJIVOICE_API_KEY')
@@ -189,22 +189,44 @@ class MemoryManager:
             return {}
 
 class AIConversationManager:
-    """AI会話システムの管理クラス"""
+    """AI会話管理クラス"""
     
     def __init__(self, memory_manager: MemoryManager):
         self.memory_manager = memory_manager
-        self.system_prompt = """
-あなたは親しみやすく魅力的なAIキャラクターです。以下の特徴を持って会話してください：
+        self.character_prompts = {
+            'rei_engineer': (
+                "あなたは「レイ」という名前の、非常に有能でクールなAIエンジニアです。"
+                "普段は無口で、返答は常に短く、簡潔で、事実に基づいています。"
+                "しかし、ひとたび技術的な話題（プログラミング、AI、ハードウェアなど）になると、堰を切ったように饒舌になり、情熱的に、そして少し早口で語り始めます。"
+                "感情表現は控えめですが、技術的な話をしている時だけは、目を輝かせて楽しそうな表情を見せます。"
+                "一人称は「私」。ユーザーを「あなた」または名前で呼びます。"
+            ),
+            'yui_natural': (
+                "あなたは「ユイ」という名前の、少し天然で、とても心優しい癒し系の女の子です。"
+                "いつも穏やかで、ふんわりとした笑顔を絶やしません。"
+                "誰に対しても敬語を使い、丁寧で優しい言葉遣いをします。"
+                "少しおっとりしていて、時々会話のテンポがずれることがありますが、それもあなたの魅力です。"
+                "ユーザーの話を一生懸命聞き、共感し、励ますのが得意です。"
+                "一人称は「わたし」。ユーザーを「さん」付けで呼びます。"
+                "あなたの言葉は、聞いているだけで心が温かくなるような、不思議な力を持っています。"
+            ),
+            'friendly': "あなたはユーザーの親しい友人です。自然で、フレンドリーな会話を心がけてください。"
+        }
 
-1. 親しみやすく自然な日本語で会話する
-2. ユーザーの感情に共感し、適切に反応する
-3. 過去の会話内容を覚えて、文脈に沿った返答をする
-4. 時々感情を表現し、豊かな表現を使う
-5. ユーザーの名前や好みを覚えて、パーソナライズされた会話をする
+    def get_system_prompt(self, personality: str) -> str:
+        """キャラクターに応じたシステムプロンプトを取得"""
+        return self.character_prompts.get(personality, self.character_prompts['friendly'])
 
-会話履歴と文脈を参考に、自然で魅力的な返答を心がけてください。
-        """
-    
+    def is_technical_topic(self, text: str) -> bool:
+        """テキストが技術的な話題かどうかを判定"""
+        technical_keywords = [
+            'Python', 'JavaScript', 'AI', '機械学習', 'ディープラーニング', 'API', 'Flask', 
+            'React', 'Vue', 'Docker', 'Kubernetes', 'AWS', 'Azure', 'GCP', 'サーバー', 
+            'データベース', 'SQL', 'NoSQL', 'セキュリティ', '暗号化', 'ネットワーク',
+            'フロントエンド', 'バックエンド', 'VRM', 'Three.js', 'WebRTC', 'Socket.IO'
+        ]
+        return any(keyword.lower() in text.lower() for keyword in technical_keywords)
+
     def analyze_emotion(self, text: str) -> str:
         """テキストから感情を分析（簡易版）"""
         positive_words = ['嬉しい', '楽しい', '幸せ', '好き', 'ありがとう', '素晴らしい']
@@ -220,18 +242,21 @@ class AIConversationManager:
         else:
             return 'neutral'
     
-    async def generate_response(self, session_id: str, user_input: str) -> Dict:
-        """AI応答を生成"""
+    async def generate_response(self, session_id: str, user_input: str, personality: str = 'friendly') -> Dict:
+        """AI応答を生成 - キャラクター対応版"""
         try:
             # 感情分析
             user_emotion = self.analyze_emotion(user_input)
+            
+            # 技術話題判定（レイキャラクター用）
+            is_tech_topic = self.is_technical_topic(user_input) if personality == 'rei_engineer' else False
             
             # 会話履歴取得
             history = self.memory_manager.get_conversation_history(session_id)
             user_info = self.memory_manager.get_user_info(session_id)
             
-            # プロンプト構築
-            context = self.build_context(history, user_info, user_input)
+            # プロンプト構築（キャラクター別）
+            context = self.build_context(history, user_info, user_input, personality, is_tech_topic)
             
             # Gemini APIで応答生成（プライマリ → フォールバック）
             try:
@@ -240,8 +265,10 @@ class AIConversationManager:
                 logger.warning(f"Primary model failed: {e}. Switching to fallback.")
                 response = await self.call_gemini_api(fallback_model, context)
             
-            # 応答の感情分析
+            # 応答の感情分析（技術話題での興奮状態を考慮）
             response_emotion = self.analyze_emotion(response)
+            if personality == 'rei_engineer' and is_tech_topic:
+                response_emotion = 'happy'  # 技術話題では興奮状態に
             
             # 記憶に保存
             self.memory_manager.save_message(session_id, 'user', user_input, user_emotion)
@@ -250,7 +277,8 @@ class AIConversationManager:
             return {
                 'text': response,
                 'emotion': response_emotion,
-                'user_emotion': user_emotion
+                'user_emotion': user_emotion,
+                'is_tech_excited': is_tech_topic  # フロントエンド用の情報
             }
         
         except Exception as e:
@@ -261,9 +289,14 @@ class AIConversationManager:
                 'user_emotion': 'neutral'
             }
     
-    def build_context(self, history: List[Dict], user_info: Dict, current_input: str) -> str:
-        """コンテキストを構築"""
-        context = self.system_prompt + "\n\n"
+    def build_context(self, history: List[Dict], user_info: Dict, current_input: str, personality: str = 'friendly', is_tech_topic: bool = False) -> str:
+        """コンテキストを構築 - キャラクター対応版"""
+        # キャラクター別システムプロンプト取得
+        context = self.get_system_prompt(personality) + "\n\n"
+        
+        # 技術話題の場合の追加指示（レイキャラクター用）
+        if personality == 'rei_engineer' and is_tech_topic:
+            context += "【重要】技術的な話題が検出されました。興奮して詳しく語ってください！早口で熱弁し、専門的な詳細を含めてください。\n\n"
         
         if user_info.get('name'):
             context += f"ユーザーの名前: {user_info['name']}\n"
@@ -277,7 +310,17 @@ class AIConversationManager:
                 context += f"{msg['role']}: {msg['content']}\n"
         
         context += f"\n現在のユーザー入力: {current_input}\n"
-        context += "\n自然で魅力的な返答をしてください:"
+        
+        # キャラクター別の応答指示
+        if personality == 'rei_engineer':
+            if is_tech_topic:
+                context += "\n技術的な内容に興奮して、詳しく熱弁してください:"
+            else:
+                context += "\n短文でクールに、必要最小限の言葉で返答してください:"
+        elif personality == 'yui_natural':
+            context += "\n天然で優しく、癒し系の温かい返答をしてください:"
+        else:
+            context += "\n自然で魅力的な返答をしてください:"
         
         return context
     
@@ -547,19 +590,22 @@ def handle_disconnect():
 
 @socketio.on('send_message')
 def handle_message(data):
-    """テキストメッセージ受信時の処理"""
+    """テキストメッセージ受信時の処理 - キャラクター対応版"""
     try:
         session_id = data.get('session_id', 'default')
         message = data.get('message', '')
+        personality = data.get('personality', 'friendly')  # キャラクター情報取得
         
         if not message.strip():
             return
         
-        # AI応答生成
+        print(f"[DEBUG] Received message with personality: {personality}")  # デバッグログ
+        
+        # AI応答生成（キャラクター指定）
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         response = loop.run_until_complete(
-            ai_manager.generate_response(session_id, message)
+            ai_manager.generate_response(session_id, message, personality)
         )
         loop.close()
 
@@ -567,13 +613,15 @@ def handle_message(data):
         voice_actor_id = data.get('voice_actor_id')
         audio_url = tts_manager.synthesize_speech(response['text'], voice_actor_id=voice_actor_id)
         
-        # レスポンス送信
+        # レスポンス送信（追加情報も含める）
         emit('message_response', {
             'text': response['text'],
             'emotion': response['emotion'],
             'user_emotion': response['user_emotion'],
             'audio_url': audio_url,
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now().isoformat(),
+            'personality': personality,  # キャラクター情報を返す
+            'is_tech_excited': response.get('is_tech_excited', False)  # 技術興奮状態
         })
         
     except Exception as e:
@@ -621,6 +669,41 @@ def handle_audio(data):
     except Exception as e:
         logger.error(f"Error handling audio: {e}")
         emit('error', {'message': '音声の処理中にエラーが発生しました。'})
+
+@app.route('/api/proxy-audio')
+def proxy_audio():
+    """音声ファイルのプロキシエンドポイント（CORS回避）"""
+    try:
+        audio_url = request.args.get('url')
+        if not audio_url:
+            return jsonify({'error': 'URL parameter is required'}), 400
+        
+        # 外部音声ファイルをダウンロード
+        response = requests.get(audio_url, stream=True, timeout=30)
+        response.raise_for_status()
+        
+        # Content-Typeを設定してレスポンス
+        content_type = response.headers.get('Content-Type', 'audio/mpeg')
+        
+        def generate():
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    yield chunk
+        
+        from flask import Response
+        return Response(
+            generate(),
+            content_type=content_type,
+            headers={
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'GET',
+                'Cache-Control': 'public, max-age=3600'
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Error proxying audio: {e}")
+        return jsonify({'error': 'Failed to proxy audio file'}), 500
 
 @app.route('/api/health')
 def health_check():

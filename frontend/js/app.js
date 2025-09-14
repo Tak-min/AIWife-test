@@ -30,6 +30,22 @@ class AIWifeApp {
         this.animations = new Map();
         this.currentEmotion = 'neutral';
         this.floor = null; // 足場
+        this.backgroundMesh = null; // 背景メッシュ（180度）
+        
+        // 表情・ブリンク関連
+        this.lastBlinkTime = 0;
+        this.nextBlinkTime = 0;
+        this.isBlinking = false;
+        this.currentExpression = 'neutral';
+        
+        // リップシンク関連
+        this.audioContext = null;
+        this.audioAnalyser = null;
+        this.audioSource = null;
+        this.frequencyData = null;
+        this.lipSyncWeight = 0.0;
+        this.currentAudio = null;
+        this.lipSyncSensitivity = 1.0; // 大きめの重みで視認性向上
         
         // 3D UI System
         this.glassPanel = null;
@@ -58,9 +74,9 @@ class AIWifeApp {
             voiceActorId: null, // ★ 初期値をnullに変更
             volume: 0.7,
             voiceSpeed: 1.0,
-            personality: 'friendly',
+            personality: 'rei_engineer', // デフォルトをレイに変更
             memoryEnabled: true,
-            background: 'sky.jpg', // 背景設定
+            background: '', // 背景設定
             use3DUI: true // 3D UIモードを有効化
         };
         
@@ -79,15 +95,38 @@ class AIWifeApp {
             await this.loadCharacter();
             this.loadSettings();
             this.populateVoiceActors(); // ボイス選択肢を生成
+            this.initBlinkTimer(); // ブリンクタイマー初期化
             this.startRenderLoop();
             
             console.log('AI Wife App initialized successfully');
+            
+            // 初期化完了後にレイに挨拶
+            setTimeout(() => {
+                this.send3DMessage('初めまして！');
+            }, 2000); // 2秒後に挨拶
         } catch (error) {
             console.error('Failed to initialize app:', error);
             this.showError('アプリケーションの初期化に失敗しました');
         }
     }
     
+    /**
+     * ブリンクタイマーの初期化
+     */
+    initBlinkTimer() {
+        this.lastBlinkTime = Date.now();
+        this.scheduleNextBlink();
+    }
+    
+    /**
+     * 次のブリンクをスケジュール
+     */
+    scheduleNextBlink() {
+        // 2-6秒のランダムな間隔でブリンク
+        const interval = 2000 + Math.random() * 4000;
+        this.nextBlinkTime = Date.now() + interval;
+    }
+
     /**
      * セッションIDの生成
      */
@@ -161,7 +200,30 @@ class AIWifeApp {
                 this.elements.sidebar.classList.contains('open')) {
                 this.closeSidebar();
             }
+            
+            // 最初のクリックでAudioContextを初期化
+            this.initAudioContext();
         });
+        
+        // AudioContext初期化のための任意のインタラクション
+        document.addEventListener('keydown', () => this.initAudioContext());
+    }
+    
+    /**
+     * AudioContextの初期化（ユーザーインタラクション後）
+     */
+    /**
+     * AudioContextの初期化（ユーザーインタラクション後）
+     */
+    initAudioContext() {
+        if (!this.audioContext) {
+            try {
+                this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                console.log('AudioContext initialized for lip sync');
+            } catch (error) {
+                console.error('Failed to initialize AudioContext:', error);
+            }
+        }
     }
     
     /**
@@ -229,12 +291,12 @@ class AIWifeApp {
         
         // カメラ
         this.camera = new THREE.PerspectiveCamera(30.0, window.innerWidth / window.innerHeight, 0.1, 20.0);
-        this.camera.position.set(0.0, 1.0, -2.0);
+        this.camera.position.set(0.0, 1.0, -3.0); // Y座標を下げて下から見上げる角度に
         
         // カメラコントロール
         this.controls = new OrbitControls(this.camera, this.renderer.domElement);
         this.controls.screenSpacePanning = true;
-        this.controls.target.set(0.0, 1.0, 0.0);
+        this.controls.target.set(0.0, 0.7, 0.0); // ターゲットも少し下げて水平に近い角度に
         this.controls.enableDamping = true;
         this.controls.dampingFactor = 0.05;
         this.controls.enableRotate = true; // 回転を無効化
@@ -276,13 +338,13 @@ class AIWifeApp {
      */
     createFloor() {
         // 大きな平面ジオメトリを作成（x-z平面）
-        const floorGeometry = new THREE.PlaneGeometry(1000, 1000); // 1000x1000の巨大なフロア
+        const floorGeometry = new THREE.PlaneGeometry(100, 5); // 1000x1000の巨大なフロア
         
         // 半透明のマテリアル
         const floorMaterial = new THREE.MeshLambertMaterial({
             color: 0xffffff,
             transparent: true,
-            opacity: 1.0, // ほぼ透明
+            opacity: 0.5,
             side: THREE.DoubleSide
         });
         
@@ -405,12 +467,14 @@ class AIWifeApp {
      */
     send3DMessage(message) {
         console.log('Sending 3D message:', message);
+        console.log('Character personality:', this.settings.personality);
         this.showLoading();
         
         this.socket.emit('send_message', {
             session_id: this.sessionId,
             message: message,
-            voice_actor_id: this.settings.voiceActorId
+            voice_actor_id: this.settings.voiceActorId,
+            personality: this.settings.personality // キャラクター情報を追加
         });
     }
     
@@ -516,6 +580,12 @@ class AIWifeApp {
      */
     async loadBackground() {
         try {
+            // 既存の背景オブジェクトを削除
+            if (this.backgroundMesh) {
+                this.scene.remove(this.backgroundMesh);
+                this.backgroundMesh = null;
+            }
+            
             if (this.settings.background === 'none') {
                 this.scene.background = null;
                 return;
@@ -528,8 +598,34 @@ class AIWifeApp {
             texture.mapping = THREE.EquirectangularReflectionMapping;
             texture.encoding = THREE.sRGBEncoding;
             
-            this.scene.background = texture;
-            console.log('Background loaded:', this.settings.background);
+            // 前方90度x90度の球体を作成（内側から見る）
+            const geometry = new THREE.SphereGeometry(
+                10, // 半径を大幅に拡大
+                64,  // 横の分割数
+                32,  // 縦の分割数
+                Math.PI/4,   // 水平方向の開始角度（-45度から開始）
+                Math.PI/2,   // 水平方向の角度範囲（90度）
+                Math.PI/6,   // 垂直方向の開始角度（上45度から開始）
+                Math.PI/2    // 垂直方向の角度範囲（90度）
+            );
+            
+            const material = new THREE.MeshBasicMaterial({ 
+                map: texture, 
+                side: THREE.BackSide, // 内側から見えるように
+                depthWrite: false, // 深度バッファへの書き込みを無効化
+                depthTest: false   // 深度テストを無効化
+            });
+            
+            this.backgroundMesh = new THREE.Mesh(geometry, material);
+            this.backgroundMesh.position.set(0, 1.5, 0);
+            this.backgroundMesh.renderOrder = -1; // 最背面に描画
+            
+            this.scene.add(this.backgroundMesh);
+            
+            // scene.backgroundはクリア
+            this.scene.background = null;
+            
+            console.log('Background loaded (180-degree):', this.settings.background);
             
         } catch (error) {
             console.error('Failed to load background:', error);
@@ -634,8 +730,16 @@ class AIWifeApp {
     /**
      * 感情に基づくアニメーション再生
      */
-    playEmotionAnimation(emotion) {
+    playEmotionAnimation(emotion, personality = 'friendly', isTechExcited = false) {
         if (!this.vrm || !this.mixer) return;
+        
+        let selectedEmotion = emotion;
+        
+        // レイキャラクターの技術興奮時は強制的にhappyに
+        if (personality === 'rei_engineer' && isTechExcited) {
+            selectedEmotion = 'happy';
+            console.log('[Debug] Rei tech excitement: forcing happy emotion');
+        }
         
         const emotionAnimations = {
             happy: 'taisou.vrma',
@@ -644,15 +748,128 @@ class AIWifeApp {
             neutral: 'animation.vrma'
         };
         
-        const animationFile = emotionAnimations[emotion] || emotionAnimations.neutral;
+        const animationFile = emotionAnimations[selectedEmotion] || emotionAnimations.neutral;
         
         if (animationFile !== this.settings.animation) {
             this.settings.animation = animationFile;
             this.loadAnimation();
         }
         
-        this.currentEmotion = emotion;
-        this.updateCharacterMood(emotion);
+        // 表情も変更（キャラクター別強度調整）
+        this.setExpression(selectedEmotion, personality, isTechExcited);
+        
+        this.currentEmotion = selectedEmotion;
+        console.log(`[Debug] Playing emotion animation: ${selectedEmotion} for ${personality}${isTechExcited ? ' (tech excited)' : ''}`);
+        
+        // キャラクター情報を更新
+        this.updateCharacterMood(selectedEmotion);
+    }
+    
+    /**
+     * 表情の設定 - キャラクター対応版
+     */
+    setExpression(emotion, personality = 'friendly', isTechExcited = false) {
+        if (!this.vrm || !this.vrm.expressionManager) return;
+        
+        // 全ての表情をリセット（blinkも含む）
+        const expressionManager = this.vrm.expressionManager;
+        expressionManager.setValue('happy', 0);
+        expressionManager.setValue('sad', 0);
+        expressionManager.setValue('surprised', 0);
+        expressionManager.setValue('angry', 0);
+        expressionManager.setValue('relaxed', 0);
+        expressionManager.setValue('blink', 0); // ★ blinkもリセット
+        
+        // ブリンク状態もリセット
+        this.isBlinking = false;
+        
+        // 対応する表情を設定
+        const expressionMap = {
+            happy: 'happy',
+            sad: 'sad', 
+            surprised: 'surprised',
+            neutral: 'relaxed'
+        };
+        
+        const expression = expressionMap[emotion] || 'relaxed';
+        
+        // キャラクター別の表情強度調整
+        let intensity = 1.0;
+        if (expression === 'happy') {
+            if (personality === 'rei_engineer' && isTechExcited) {
+                // レイの技術興奮時は強めの表情
+                intensity = 0.9;
+            } else if (personality === 'yui_natural') {
+                // ユイは優しい表情
+                intensity = 0.7;
+            } else {
+                // 一般的には控えめ
+                intensity = 0.6;
+            }
+        }
+        
+        expressionManager.setValue(expression, intensity);
+        
+        this.currentExpression = emotion;
+        console.log(`[Debug] Expression set: ${expression} with intensity ${intensity} for ${personality}${isTechExcited ? ' (tech excited)' : ''}`);
+        
+        // 表情変更後、新しいブリンクをスケジュール
+        this.scheduleNextBlink();
+    }
+    
+    /**
+     * ブリンクの実行
+     */
+    performBlink() {
+        if (!this.vrm || !this.vrm.expressionManager || this.isBlinking) return;
+        
+        this.isBlinking = true;
+        const expressionManager = this.vrm.expressionManager;
+        
+        // 現在の感情をチェック
+        const isHappyExpression = this.currentExpression === 'happy';
+        
+        // ブリンクアニメーション（目を閉じる→開ける）
+        const blinkDuration = 150; // ミリ秒
+        const startTime = Date.now();
+        
+        const animateBlink = () => {
+            const elapsed = Date.now() - startTime;
+            const progress = elapsed / blinkDuration;
+            
+            if (progress < 0.5) {
+                // 目を閉じる
+                const blinkValue = progress * 2;
+                // happy表情時はブリンクの強度を抑制
+                const maxBlinkValue = isHappyExpression ? 0.6 : 1.0;
+                expressionManager.setValue('blink', Math.min(blinkValue, maxBlinkValue));
+            } else if (progress < 1.0) {
+                // 目を開ける
+                const blinkValue = 1.0 - (progress - 0.5) * 2;
+                const maxBlinkValue = isHappyExpression ? 0.6 : 1.0;
+                expressionManager.setValue('blink', Math.min(blinkValue, maxBlinkValue));
+            } else {
+                // ブリンク終了 - 必ず0にリセット
+                expressionManager.setValue('blink', 0);
+                this.isBlinking = false;
+                this.scheduleNextBlink();
+                console.log(`Blink completed. Current expression: ${this.currentExpression}`);
+                return;
+            }
+            
+            requestAnimationFrame(animateBlink);
+        };
+        
+        animateBlink();
+    }
+    
+    /**
+     * ブリンクの更新（レンダリングループで呼び出し）
+     */
+    updateBlink() {
+        if (!this.isBlinking && Date.now() >= this.nextBlinkTime) {
+            this.performBlink();
+        }
     }
     
     /**
@@ -675,6 +892,12 @@ class AIWifeApp {
             if (this.controls) {
                 this.controls.update();
             }
+            
+            // ブリンクの更新
+            this.updateBlink();
+            
+            // リップシンクの更新
+            this.updateLipSync();
             
             if (this.renderer && this.scene && this.camera) {
                 this.renderer.render(this.scene, this.camera);
@@ -731,23 +954,60 @@ class AIWifeApp {
     }
     
     /**
-     * メッセージレスポンス処理（3D UI専用）
+     * メッセージレスポンス処理（3D UI専用）- キャラクター対応版
      */
     handleMessageResponse(data) {
         console.log('[Debug] Received message response:', data);
+        console.log('[Debug] Character personality:', data.personality);
+        console.log('[Debug] Tech excited state:', data.is_tech_excited);
         this.hideLoading();
+        
+        // キャラクター別の音声設定を適用
+        this.applyCharacterSettings(data.personality, data.is_tech_excited);
         
         // AR吹き出しで表示
         this.showARSpeechBubble(data.text);
         
-        // 感情に基づくアニメーション
+        // 感情に基づくアニメーション（キャラクター別調整）
         if (data.emotion) {
-            this.playEmotionAnimation(data.emotion);
+            this.playEmotionAnimation(data.emotion, data.personality, data.is_tech_excited);
         }
         
         // 音声再生
         if (data.audio_url) {
             this.playAudio(data.audio_url);
+        }
+    }
+    
+    /**
+     * キャラクター別設定を適用
+     */
+    applyCharacterSettings(personality, isTechExcited = false) {
+        const originalSpeed = this.settings.voiceSpeed;
+        
+        switch(personality) {
+            case 'rei_engineer':
+                if (isTechExcited) {
+                    // 技術話題で興奮時は早口
+                    this.settings.voiceSpeed = 1.3;
+                    console.log('[Debug] Rei excited mode: speech speed increased to 1.3');
+                } else {
+                    // 普段はクールで標準速度
+                    this.settings.voiceSpeed = 1.0;
+                    console.log('[Debug] Rei cool mode: normal speech speed');
+                }
+                break;
+                
+            case 'yui_natural':
+                // 天然女の子はゆっくり話す
+                this.settings.voiceSpeed = 0.9;
+                console.log('[Debug] Yui mode: slow speech speed 0.9');
+                break;
+                
+            default:
+                // デフォルト設定
+                this.settings.voiceSpeed = 1.0;
+                break;
         }
     }
     
@@ -894,28 +1154,240 @@ class AIWifeApp {
      * 音声再生
      */
     playAudio(audioUrl) {
-        console.log('[Debug] playAudio called with URL:', audioUrl); // ★ デバッグログ追加
+        console.log('[Debug] playAudio called with URL:', audioUrl);
         try {
             if (!audioUrl) {
-                console.log('[Debug] No audio URL provided. Skipping playback.'); // ★ デバッグログ追加
+                console.log('[Debug] No audio URL provided. Skipping playback.');
                 return;
             }
 
-            const audio = new Audio(audioUrl);
-            console.log('[Debug] Created Audio object:', audio); // ★ デバッグログ追加
+            // プロキシURL経由で音声を取得（CORS回避）
+            const proxyUrl = `http://localhost:5000/api/proxy-audio?url=${encodeURIComponent(audioUrl)}`;
+            console.log('[Debug] Using proxy URL:', proxyUrl);
+
+            const audio = new Audio(proxyUrl);
+            console.log('[Debug] Created Audio object with proxy URL');
 
             audio.volume = this.settings.volume;
             audio.playbackRate = this.settings.voiceSpeed;
-            
-            console.log('[Debug] Attempting to play audio...'); // ★ デバッグログ追加
-            audio.play().catch(error => {
+
+            // 音声ロード完了後にリップシンクセットアップ
+            audio.addEventListener('loadeddata', () => {
+                console.log('[Debug] Audio loaded successfully, setting up lip sync');
+                try {
+                    this.setupLipSync(audio);
+                } catch (error) {
+                    console.warn('Lip sync setup failed, using fallback:', error);
+                    this.simulateBasicLipSync();
+                }
+            });
+
+            // 音声再生開始
+            audio.addEventListener('play', () => {
+                console.log('[Debug] Audio playback started');
+            });
+
+            // 音声再生終了時のクリーンアップ
+            audio.addEventListener('ended', () => {
+                console.log('[Debug] Audio playback ended');
+                this.lipSyncWeight = 0.0;
+                if (this.vrm && this.vrm.expressionManager) {
+                    // リップシンク関連の値をリセット
+                    this.vrm.expressionManager.setValue('aa', 0);
+                    this.vrm.expressionManager.setValue('ih', 0);
+                    this.vrm.expressionManager.setValue('ou', 0);
+                    
+                    // 表情をneutralに戻す
+                    setTimeout(() => {
+                        this.setExpression('neutral');
+                        console.log('[Debug] Expression reset to neutral after audio ended');
+                    }, 500); // 0.5秒後にneutralに戻す
+                }
+            });
+
+            // エラーハンドリング
+            audio.addEventListener('error', (e) => {
+                console.error('[Debug] Audio error:', e);
+                console.log('[Debug] Falling back to basic lip sync animation');
+                this.simulateBasicLipSync();
+            });
+
+            console.log('[Debug] Attempting to play audio...');
+            audio.play().then(() => {
+                console.log('[Debug] Audio play() promise resolved successfully');
+            }).catch(error => {
                 console.error('Failed to play audio:', error);
-                this.showError('音声の再生に失敗しました。');
+                console.log('[Debug] Using fallback lip sync animation');
+                this.simulateBasicLipSync();
+                this.showError('音声の再生に失敗しました。リップシンクのみ実行します。');
+            });
+
+        } catch (error) {
+            console.error('Error in playAudio:', error);
+            console.log('[Debug] Using fallback lip sync animation due to error');
+            this.simulateBasicLipSync();
+            this.showError('音声処理でエラーが発生しました。');
+        }
+    }
+    
+    /**
+     * リップシンクのセットアップ
+     */
+    setupLipSync(audio) {
+        try {
+            // AudioContextの初期化（ユーザーインタラクション後に実行される）
+            if (!this.audioContext) {
+                this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            
+            // AudioContextの状態確認
+            if (this.audioContext.state === 'suspended') {
+                this.audioContext.resume();
+            }
+            
+            // 既存のaudioSourceがあれば切断
+            if (this.audioSource) {
+                try {
+                    this.audioSource.disconnect();
+                } catch (e) {
+                    console.warn('Previous audio source disconnect failed:', e);
+                }
+            }
+            
+            // アナライザーの作成
+            this.audioAnalyser = this.audioContext.createAnalyser();
+            this.audioAnalyser.fftSize = 256;
+            this.audioAnalyser.smoothingTimeConstant = 0.8;
+            
+            // 周波数データ配列の初期化
+            this.frequencyData = new Uint8Array(this.audioAnalyser.frequencyBinCount);
+            
+            // オーディオソースの作成（CORSエラー可能性あり）
+            this.audioSource = this.audioContext.createMediaElementSource(audio);
+            this.audioSource.connect(this.audioAnalyser);
+            this.audioAnalyser.connect(this.audioContext.destination);
+            
+            this.currentAudio = audio;
+            console.log('Lip sync setup completed successfully');
+            
+        } catch (error) {
+            console.warn('Lip sync setup failed, likely due to CORS restrictions. Audio will play without lip sync:', error);
+            
+            // CORSエラーでリップシンクが失敗した場合のフォールバック
+            this.audioSource = null;
+            this.audioAnalyser = null;
+            this.frequencyData = null;
+            this.currentAudio = audio;
+            
+            // 簡易的な口の動きシミュレーション（オプション）
+            this.simulateBasicLipSync(audio);
+        }
+    }
+    
+    /**
+     * CORS制限時の簡易リップシンクシミュレーション
+     */
+    simulateBasicLipSync(audio) {
+        if (!audio || !this.vrm || !this.vrm.expressionManager) return;
+        
+        let lipSyncInterval;
+        
+        const startSimulation = () => {
+            lipSyncInterval = setInterval(() => {
+                if (audio.paused || audio.ended) {
+                    clearInterval(lipSyncInterval);
+                    this.lipSyncWeight = 0.0;
+                    this.updateMouthExpression();
+                    return;
+                }
+                
+                // ランダムな口の動きをシミュレート
+                this.lipSyncWeight = Math.random() * 0.6 + 0.2; // 0.2-0.8の範囲
+                this.updateMouthExpression();
+            }, 150); // 150msごとに更新
+        };
+        
+        const stopSimulation = () => {
+            if (lipSyncInterval) {
+                clearInterval(lipSyncInterval);
+                this.lipSyncWeight = 0.0;
+                this.updateMouthExpression();
+                
+                // 表情をneutralに戻す
+                setTimeout(() => {
+                    this.setExpression('neutral');
+                    console.log('[Debug] Expression reset to neutral after lip sync simulation ended');
+                }, 500); // 0.5秒後にneutralに戻す
+            }
+        };
+        
+        audio.addEventListener('play', startSimulation);
+        audio.addEventListener('pause', stopSimulation);
+        audio.addEventListener('ended', stopSimulation);
+    }
+    
+    /**
+     * 音声レベルを解析してリップシンクの重みを計算
+     */
+    updateLipSync() {
+        try {
+            if (!this.audioAnalyser || !this.frequencyData || !this.currentAudio || this.currentAudio.paused) {
+                this.lipSyncWeight = 0.0;
+                return;
+            }
+            
+            // 周波数データを取得
+            this.audioAnalyser.getByteFrequencyData(this.frequencyData);
+            
+            // 音声レベルを計算（低域〜中域を重視）
+            let sum = 0;
+            const relevantBins = Math.min(64, this.frequencyData.length); // 低域〜中域のみ
+            for (let i = 0; i < relevantBins; i++) {
+                sum += this.frequencyData[i];
+            }
+            
+            const average = sum / relevantBins;
+            
+            // 正規化と感度調整（大きめの重みで視認性向上）
+            this.lipSyncWeight = Math.min(1.0, (average / 255.0) * this.lipSyncSensitivity);
+            
+            // 口の表情を更新
+            this.updateMouthExpression();
+        } catch (error) {
+            // リップシンク処理でエラーが発生した場合はスキップ
+            console.warn('Lip sync update failed:', error);
+            this.lipSyncWeight = 0.0;
+        }
+    }
+    
+    /**
+     * 口の表情を更新（リップシンク + 感情表現）
+     */
+    updateMouthExpression() {
+        if (!this.vrm || !this.vrm.expressionManager) return;
+        
+        try {
+            // 基本の感情表現
+            const expressions = {
+                'aa': this.lipSyncWeight, // 口を開ける（あ音）
+                'ih': this.lipSyncWeight * 0.7, // 口を少し開ける（い音）
+                'ou': this.lipSyncWeight * 0.8, // 口を丸める（お音）
+            };
+            
+            // 感情に応じた基本表情と組み合わせ
+            if (this.currentExpression === 'happy') {
+                this.vrm.expressionManager.setValue('happy', 0.8 - this.lipSyncWeight * 0.3);
+            } else if (this.currentExpression === 'sad') {
+                this.vrm.expressionManager.setValue('sad', 0.6 - this.lipSyncWeight * 0.2);
+            }
+            
+            // リップシンクの適用
+            Object.entries(expressions).forEach(([expression, weight]) => {
+                this.vrm.expressionManager.setValue(expression, weight);
             });
             
         } catch (error) {
-            console.error('Failed to play audio:', error);
-            this.showError('音声の再生中にエラーが発生しました。');
+            console.error('Failed to update mouth expression:', error);
         }
     }
     
