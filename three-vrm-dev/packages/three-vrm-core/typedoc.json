@@ -1,4 +1,0 @@
-{
-  "name": "three-vrm-core",
-  "entryPoints": ["src/index.ts"]
-}

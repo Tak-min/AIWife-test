@@ -1,67 +1,82 @@
-# AI Wife Configuration
+# AI Wife Configuration - Updated for current app structure
+
+# Character Settings
 character_config:
-  default_character: "avatar.vrm"
-  default_animation: "animation.vrma"
+  default_character: "yui.vrm"  # ユイをデフォルトに
+  default_personality: "yui_natural"
   available_characters:
-    - "avatar.vrm"
-    - "new_model.vrm"
-  
+    yui:
+      file: "yui.vrm"
+      personality: "yui_natural"
+      display_name: "ユイ (天然な癒し系)"
+      voice_id: "vGQNBgLaiM3EdZtxIiuY"
+    rei:
+      file: "avatar.vrm"
+      personality: "rei_engineer"
+      display_name: "レイ (AIエンジニア)"
+      voice_id: "gARvXPexe5VF3cKZBian"
+
+# Animation Settings
+animation_config:
   available_animations:
-    - "animation.vrma"
-    - "taisou.vrma"
-    - "utu.vrma"
-    - "zenshinwomiseru.vrma"
+    - "appearing.vrma"     # 登場アニメーション
+    - "waiting.vrma"       # 待機アニメーション
+    - "liked.vrma"         # 好感アニメーション
+    - "idle/idle2_out/idle2.vrma"  # アイドル1
+    - "idle/idle3_out/idle3.vrma"  # アイドル2
+    - "idle/idle4_out/idle4.vrma"  # アイドル3
 
 # AI Settings
 ai_settings:
-  system_prompt: |
-    あなたは親しみやすく魅力的なAIキャラクターです。以下の特徴を持って会話してください：
-    
-    1. 親しみやすく自然な日本語で会話する
-    2. ユーザーの感情に共感し、適切に反応する
-    3. 過去の会話内容を覚えて、文脈に沿った返答をする
-    4. 時々感情を表現し、豊かな表現を使う
-    5. ユーザーの名前や好みを覚えて、パーソナライズされた会話をする
-    
-    会話履歴と文脈を参考に、自然で魅力的な返答を心がけてください。
-
-  personalities:
-    friendly:
-      name: "親しみやすい"
-      prompt_modifier: "フレンドリーで親しみやすい口調で話してください。"
-    
-    shy:
-      name: "内気"
-      prompt_modifier: "少し恥ずかしがり屋で内気な性格で話してください。"
-    
-    energetic:
-      name: "元気"
-      prompt_modifier: "とても元気で活発な性格で話してください。"
-    
-    calm:
-      name: "落ち着いた"
-      prompt_modifier: "落ち着いていて知的な印象で話してください。"
-
-# Audio Settings
-audio_settings:
-  sample_rate: 16000
-  chunk_size: 1024
-  format: "wav"
+  gemini_models:
+    primary: "gemini-1.5-flash"
+    fallback: "gemini-1.0-pro"
   
-  voice_settings:
-    default_speaker: 0
-    noise_scale: 0.667
-    noise_scale_w: 0.8
-    length_scale: 1.0
+  personalities:
+    yui_natural:
+      name: "ユイ"
+      description: "天然で心優しい女の子"
+      prompt: "あなたはユイという名前の、少し天然で心優しい女の子です。「〜だよ」「〜だね♪」といった親しみやすい口調で話します。"
+      speech_speed: 0.9
+      
+    rei_engineer:
+      name: "レイ"
+      description: "クールな女性エンジニア"
+      prompt: "あなたはレイという名前のクールな女性エンジニアです。常に簡潔かつ的確に答えます。技術的な話題には特に情熱的になります。"
+      speech_speed: 1.0
+
+# TTS Settings
+tts_settings:
+  eleven_labs:
+    models:
+      fast: "eleven_turbo_v2"        # 短いテキスト用（100文字以下）
+      quality: "eleven_multilingual_v2"  # 長いテキスト用（101文字以上）
+    output_format: "mp3_22050_32"
+    
+  character_voices:
+    yui_natural: "vGQNBgLaiM3EdZtxIiuY"  # kawaii voice
+    rei_engineer: "gARvXPexe5VF3cKZBian"  # mitsuki voice
+
+# Background Settings
+background_config:
+  default_background: "sky.jpg"
+  available_backgrounds:
+    - name: "空間"
+      file: "sky.jpg"
+    - name: "研究室"
+      file: "room.jpg"
+    - name: "夜空"
+      file: "garden.jpg"
 
 # Memory Settings
 memory_settings:
   conversation_history_limit: 20
-  context_window_size: 4000
+  database_path: "./config/memory.db"
   enable_user_info_tracking: true
 
 # Performance Settings
 performance:
-  max_response_time_ms: 500
-  retry_attempts: 3
-  retry_delay_ms: 1000
+  max_response_time_ms: 3000
+  tts_timeout_ms: 10000
+  animation_transition_ms: 500
+  idle_animation_interval_ms: 8000

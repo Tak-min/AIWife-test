@@ -718,7 +718,7 @@ class TTSManager:
             print(f"[DEBUG] Starting TTS for text: '{text[:50]}...' with voice: {voice_id}")
             
             # 短いテキストの場合はより高速な設定を使用
-            model_id = "eleven_flash_v2_5" if len(text) <= 100 else "eleven_multilingual_v2"
+            model_id = "eleven_turbo_v2_5" if len(text) <= 100 else "eleven_multilingual_v2"
             
             # ElevenLabs APIで音声合成
             audio_generator = elevenlabs_client.text_to_speech.convert(
@@ -886,8 +886,8 @@ def analyze_emotion_simple(text: str) -> str:
 def build_prompt(personality: str, user_input: str) -> str:
     """キャラクターに応じたプロンプトを構築"""
     prompts = {
-        'rei_engineer': f"あなたはレイという名前のクールな女性エンジニアです。常に簡潔かつ的確に答えます。技術的な話題には特に情熱的になります。\nユーザー: {user_input}\nレイ:",
-        'yui_natural': f"あなたはユイという名前の、少し天然で心優しい女の子です。「〜だよ！」「〜だね♪」といった親しみやすい口調で話します。\nユーザー: {user_input}\nユイ:",
+        'rei_engineer': f"あなたはレイという名前のクールな女性エンジニアです。常に簡潔かつ的確に答えます。技術的な話題には特に情熱的になります。  \nユーザー: {user_input}\nレイ:",
+        'yui_natural': f"あなたはユイという名前の、少し天然で心優しい女の子です。「〜だよ」「〜だね♪」といった親しみやすい口調で話します。   \nユーザー: {user_input}\nユイ:",
     }
     return prompts.get(personality, prompts['yui_natural'])
 
