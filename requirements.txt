@@ -9,9 +9,7 @@ python-dotenv
 elevenlabs
 PyAudio
 websockets
-sqlite3-lib
 aiohttp
-asyncio
 json5
 pydub
 PyYAML
