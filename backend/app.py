@@ -47,8 +47,8 @@ else:
 genai.configure(api_key=gemini_api_key)
 
 # モデル設定とバリデーション
-primary_model_name = os.getenv('GEMINI_PRIMARY_MODEL', 'gemini-1.5-flash')
-fallback_model_name = os.getenv('GEMINI_FALLBACK_MODEL', 'gemini-1.0-pro')
+primary_model_name = os.getenv('GEMINI_PRIMARY_MODEL', 'gemini-2.5-flash')
+fallback_model_name = os.getenv('GEMINI_FALLBACK_MODEL', 'gemini-2.5-flash-lite')
 
 print(f"[DEBUG] Primary model: {primary_model_name}")
 print(f"[DEBUG] Fallback model: {fallback_model_name}")
