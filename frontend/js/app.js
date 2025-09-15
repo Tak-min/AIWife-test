@@ -53,11 +53,41 @@ class AIWifeApp {
         this.isTyping = false;
         this.bubbleActive = false;
         
+        // チャット履歴管理
+        this.currentConversation = null;
+        this.conversationMessages = [];
+        
+        // ストリーミング応答管理
+        this.currentStreamingSession = null;
+        this.audioChunkQueue = [];
+        this.isPlayingAudio = false;
+        this.audioPlaybackIndex = 0;
+        this.receivedChunks = new Map(); // chunk_index -> chunk_data
+        this.fullResponseText = '';
+        
+        // アニメーション状態管理
+        this.currentAnimationType = null;
+        this.idleTimer = null;
+        this.idleTimeout = 10000; // 10秒後にアイドルアニメーションに復帰
+        this.lastPlayedAnimation = null; // 前回再生したアニメーションを記録
+        this.isSchedulingNextAnimation = false; // 次のアニメーション予約中フラグ
+        
+        // キャラクター初期化フラグ
+        this.isCharacterInitialized = false;
+        this.hasPlayedAppearing = false;
+        this.isCharacterVisible = false;
+        
         // UI要素
         this.elements = {
             hamburgerMenu: document.getElementById('hamburgerMenu'),
             sidebar: document.getElementById('sidebar'),
             closeSidebar: document.getElementById('closeSidebar'),
+            chatHistoryMenu: document.getElementById('chatHistoryMenu'),
+            chatHistorySidebar: document.getElementById('chatHistorySidebar'),
+            closeChatHistory: document.getElementById('closeChatHistory'),
+            historyList: document.getElementById('historyList'),
+            historySearch: document.getElementById('historySearch'),
+            clearHistory: document.getElementById('clearHistory'),
             mainContent: document.getElementById('mainContent'),
             characterContainer: document.getElementById('characterContainer'),
             connectionStatus: document.getElementById('connectionStatus'),
@@ -69,14 +99,13 @@ class AIWifeApp {
         
         // 設定
         this.settings = {
-            character: 'avatar.vrm',
-            animation: 'animation.vrma',
-            voiceActorId: null, // ★ 初期値をnullに変更
+            character: 'yui.vrm', // デフォルトをユイのモデルに変更
+            voiceId: null, // ★ voiceActorIdからvoiceIdに変更
             volume: 0.7,
             voiceSpeed: 1.0,
-            personality: 'rei_engineer', // デフォルトをレイに変更
+            personality: 'yui_natural', // デフォルトをユイに変更
             memoryEnabled: true,
-            background: '', // 背景設定
+            background: 'sky.jpg', // デフォルト背景を空間に設定
             use3DUI: true // 3D UIモードを有効化
         };
         
@@ -94,16 +123,22 @@ class AIWifeApp {
             await this.loadBackground();
             await this.loadCharacter();
             this.loadSettings();
-            this.populateVoiceActors(); // ボイス選択肢を生成
+            
+            // キャラクター別のデフォルト音声を設定
+            this.setCharacterDefaultVoice(this.settings.personality);
+            
             this.initBlinkTimer(); // ブリンクタイマー初期化
             this.startRenderLoop();
             
+            // 新しい会話セッションを開始
+            this.startNewConversation();
+            
             console.log('AI Wife App initialized successfully');
             
-            // 初期化完了後にレイに挨拶
+            // 初期化完了後の処理を高速化（2秒 → 0.5秒）
             setTimeout(() => {
-                this.send3DMessage('初めまして！');
-            }, 2000); // 2秒後に挨拶
+                // this.send3DMessage('初めまして！');
+            }, 500);
         } catch (error) {
             console.error('Failed to initialize app:', error);
             this.showError('アプリケーションの初期化に失敗しました');
@@ -143,24 +178,51 @@ class AIWifeApp {
         this.elements.hamburgerMenu.addEventListener('click', () => this.toggleSidebar());
         this.elements.closeSidebar.addEventListener('click', () => this.closeSidebar());
         
+        // チャット履歴関連のイベントリスナー
+        this.elements.chatHistoryMenu.addEventListener('click', () => this.toggleChatHistory());
+        this.elements.closeChatHistory.addEventListener('click', () => this.closeChatHistory());
+        this.elements.clearHistory.addEventListener('click', () => this.clearChatHistory());
+        this.elements.historySearch.addEventListener('input', (e) => this.searchChatHistory(e.target.value));
+        
         // 設定変更
         document.getElementById('characterSelect').addEventListener('change', (e) => {
-            this.settings.character = e.target.value;
-            this.loadCharacter();
-        });
-        
-        document.getElementById('animationSelect').addEventListener('change', (e) => {
-            this.settings.animation = e.target.value;
-            this.loadAnimation();
+            // キャラクターファイル名から性格を決定
+            const characterToPersonality = {
+                'avatar.vrm': 'rei_engineer',
+                'yui.vrm': 'yui_natural'
+            };
+            
+            const selectedCharacter = e.target.value;
+            const newPersonality = characterToPersonality[selectedCharacter];
+            
+            if (newPersonality) {
+                // 設定を更新
+                this.settings.character = selectedCharacter;
+                this.settings.personality = newPersonality;
+                
+                // キャラクター別の音声設定を適用
+                this.setCharacterDefaultVoice(newPersonality);
+                
+                // キャラクターをロードし、appearing.vrmaアニメーションを再生
+                this.loadCharacterWithAppearing();
+                
+                // 新しい会話セッションを開始
+                this.startNewConversation();
+            }
         });
 
-        document.getElementById('voiceActorSelect').addEventListener('change', (e) => {
-            this.settings.voiceActorId = e.target.value;
-        });
-        
         document.getElementById('backgroundSelect').addEventListener('change', (e) => {
             this.settings.background = e.target.value;
             this.loadBackground();
+        });
+        
+        // ファイルアップロード機能
+        document.getElementById('characterUpload').addEventListener('change', (e) => {
+            this.handleCharacterUpload(e);
+        });
+        
+        document.getElementById('backgroundUpload').addEventListener('change', (e) => {
+            this.handleBackgroundUpload(e);
         });
         
         document.getElementById('volumeSlider').addEventListener('input', (e) => {
@@ -171,10 +233,6 @@ class AIWifeApp {
         document.getElementById('voiceSpeed').addEventListener('input', (e) => {
             this.settings.voiceSpeed = parseFloat(e.target.value);
             document.getElementById('voiceSpeedValue').textContent = e.target.value + 'x';
-        });
-        
-        document.getElementById('personalitySelect').addEventListener('change', (e) => {
-            this.settings.personality = e.target.value;
         });
         
         document.getElementById('memoryToggle').addEventListener('change', (e) => {
@@ -199,6 +257,13 @@ class AIWifeApp {
                 !this.elements.hamburgerMenu.contains(e.target) &&
                 this.elements.sidebar.classList.contains('open')) {
                 this.closeSidebar();
+            }
+            
+            // チャット履歴サイドバー外クリック
+            if (!this.elements.chatHistorySidebar.contains(e.target) && 
+                !this.elements.chatHistoryMenu.contains(e.target) &&
+                this.elements.chatHistorySidebar.classList.contains('open')) {
+                this.closeChatHistory();
             }
             
             // 最初のクリックでAudioContextを初期化
@@ -246,6 +311,17 @@ class AIWifeApp {
             this.handleMessageResponse(data);
         });
         
+        // ストリーミング対応イベントハンドラー
+        this.socket.on('message_chunk', (data) => {
+            console.log('[Debug] WebSocket received message_chunk event');
+            this.handleMessageChunk(data);
+        });
+        
+        this.socket.on('streaming_complete', (data) => {
+            console.log('[Debug] WebSocket received streaming_complete event');
+            this.handleStreamingComplete(data);
+        });
+        
         this.socket.on('audio_response', (data) => {
             this.handleAudioResponse(data);
         });
@@ -291,16 +367,16 @@ class AIWifeApp {
         
         // カメラ
         this.camera = new THREE.PerspectiveCamera(30.0, window.innerWidth / window.innerHeight, 0.1, 20.0);
-        this.camera.position.set(0.0, 1.0, -3.0); // Y座標を下げて下から見上げる角度に
+        this.camera.position.set(0.0, 0.9, -3.5); // Y座標を下げて下から見上げる角度に
         
         // カメラコントロール
         this.controls = new OrbitControls(this.camera, this.renderer.domElement);
         this.controls.screenSpacePanning = true;
-        this.controls.target.set(0.0, 0.7, 0.0); // ターゲットも少し下げて水平に近い角度に
+        this.controls.target.set(0.0, 0.9, 0.0); // ターゲットも少し下げて水平に近い角度に
         this.controls.enableDamping = true;
         this.controls.dampingFactor = 0.05;
-        this.controls.enableRotate = true; // 回転を無効化
-        this.controls.enableZoom = true; // ズームを無効化
+        this.controls.enableRotate = false; // 回転を無効化
+        this.controls.enableZoom = false; // ズームを無効化
         this.controls.enablePan = false; // パンを無効化
         this.controls.update();
         
@@ -468,14 +544,41 @@ class AIWifeApp {
     send3DMessage(message) {
         console.log('Sending 3D message:', message);
         console.log('Character personality:', this.settings.personality);
+        
+        // ユーザーがメッセージを送信した際はアイドルアニメーションを再生
+        this.playAnimation('idle', { loop: true });
+        
         this.showLoading();
+        
+        // ユーザーメッセージを会話履歴に追加
+        this.addMessageToConversation('user', message);
         
         this.socket.emit('send_message', {
             session_id: this.sessionId,
             message: message,
-            voice_actor_id: this.settings.voiceActorId,
-            personality: this.settings.personality // キャラクター情報を追加
+            voice_id: this.settings.voiceId,
+            personality: this.settings.personality
         });
+    }
+    
+    /**
+     * ストリーミングセッションを初期化
+     */
+    initializeStreamingSession(message) {
+        this.currentStreamingSession = {
+            startTime: Date.now(),
+            message: message,
+            expectedChunks: 0
+        };
+        
+        // 前回のデータをクリア
+        this.audioChunkQueue = [];
+        this.isPlayingAudio = false;
+        this.audioPlaybackIndex = 0;
+        this.receivedChunks.clear();
+        this.fullResponseText = '';
+        
+        console.log('[Debug] Streaming session initialized');
     }
     
     /**
@@ -533,7 +636,7 @@ class AIWifeApp {
     }
     
     /**
-     * タイピング効果でテキストを表示
+     * タイピング効果でテキストを表示（高速化版）
      */
     async typeText(text) {
         if (!this.speechBubble) return;
@@ -547,22 +650,22 @@ class AIWifeApp {
         // 吹き出しを表示
         this.speechBubble.classList.add('show');
         
-        // 少し待ってからタイピング開始
-        await new Promise(resolve => setTimeout(resolve, 300));
+        // タイピング開始前の待機時間を短縮（300ms → 100ms）
+        await new Promise(resolve => setTimeout(resolve, 100));
         
-        // タイピング効果
+        // タイピング効果（高速化：50ms → 20ms）
         textElement.innerHTML = '';
         for (let i = 0; i <= text.length; i++) {
             textElement.textContent = text.substring(0, i);
-            await new Promise(resolve => setTimeout(resolve, 50));
+            await new Promise(resolve => setTimeout(resolve, 20)); // 高速化
         }
         
         this.isTyping = false;
         
-        // 5秒後に自動で非表示
+        // 自動非表示時間を短縮（5秒 → 3秒）
         setTimeout(() => {
             this.hideARSpeechBubble();
-        }, 5000);
+        }, 3000);
     }
     
     /**
@@ -591,8 +694,22 @@ class AIWifeApp {
                 return;
             }
             
+            let textureUrl;
+            
+            // カスタムファイルかどうかを確認
+            const backgroundSelect = document.getElementById('backgroundSelect');
+            const selectedOption = backgroundSelect.querySelector(`option[value="${this.settings.background}"]`);
+            
+            if (selectedOption && selectedOption.dataset.localUrl) {
+                // カスタムアップロードファイルの場合
+                textureUrl = selectedOption.dataset.localUrl;
+            } else {
+                // デフォルトファイルの場合
+                textureUrl = `/backgrounds/${this.settings.background}`;
+            }
+            
             const loader = new THREE.TextureLoader();
-            const texture = await loader.loadAsync(`/backgrounds/${this.settings.background}`);
+            const texture = await loader.loadAsync(textureUrl);
             
             // テクスチャの設定
             texture.mapping = THREE.EquirectangularReflectionMapping;
@@ -658,7 +775,21 @@ class AIWifeApp {
             loader.register((parser) => new VRMAnimationLoaderPlugin(parser));
             
             // VRMファイルの読み込み
-            const gltfVrm = await loader.loadAsync(`./models/${this.settings.character}`);
+            let modelUrl;
+            
+            // カスタムファイルかどうかを確認
+            const characterSelect = document.getElementById('characterSelect');
+            const selectedOption = characterSelect.querySelector(`option[value="${this.settings.character}"]`);
+            
+            if (selectedOption && selectedOption.dataset.localUrl) {
+                // カスタムアップロードファイルの場合
+                modelUrl = selectedOption.dataset.localUrl;
+            } else {
+                // デフォルトファイルの場合
+                modelUrl = `./models/${this.settings.character}`;
+            }
+            
+            const gltfVrm = await loader.loadAsync(modelUrl);
             this.vrm = gltfVrm.userData.vrm;
             
             // パフォーマンス最適化
@@ -677,14 +808,22 @@ class AIWifeApp {
             lookAtQuatProxy.name = 'lookAtQuaternionProxy';
             this.vrm.scene.add(lookAtQuatProxy);
             
-            // シーンに追加
+            // シーンに追加（初期は非表示）
             this.scene.add(this.vrm.scene);
+            this.vrm.scene.visible = false;
+            this.isCharacterVisible = false;
             
             // アニメーションミキサーを作成
             this.mixer = new THREE.AnimationMixer(this.vrm.scene);
             
-            // デフォルトアニメーションの読み込み
-            await this.loadAnimation();
+            // T-poseを回避するため、デフォルトポーズを設定
+            if (this.vrm.humanoid) {
+                this.vrm.humanoid.resetNormalizedPose();
+                console.log('VRM normalized pose reset completed');
+            }
+            
+            // 初期登場アニメーションを再生
+            this.playAppearingAnimation();
             
             this.hideLoading();
             console.log('Character loaded successfully:', this.vrm);
@@ -697,70 +836,526 @@ class AIWifeApp {
     }
     
     /**
-     * アニメーションの読み込み
+     * キャラクター変更時にappearing.vrmaアニメーションと共にロードする
      */
-    async loadAnimation() {
+    async loadCharacterWithAppearing() {
         try {
-            if (!this.vrm || !this.mixer) return;
+            this.showLoading();
             
+            // アニメーション関連のフラグをリセット（キャラクター切り替え用）
+            this.hasPlayedAppearing = false;
+            this.isCharacterInitialized = false;
+            this.isCharacterVisible = false;
+            
+            // キャラクターを非表示にしてからロード
+            if (this.vrm) {
+                this.vrm.scene.visible = false;
+                this.isCharacterVisible = false;
+            }
+            
+            // 既存のVRMを削除
+            if (this.vrm) {
+                this.scene.remove(this.vrm.scene);
+                this.vrm = null;
+            }
+            
+            if (this.mixer) {
+                this.mixer = null;
+            }
+            
+            // GLTFローダーの設定
             const loader = new GLTFLoader();
+            loader.crossOrigin = 'anonymous';
+            
+            loader.register((parser) => new VRMLoaderPlugin(parser));
             loader.register((parser) => new VRMAnimationLoaderPlugin(parser));
             
-            // VRMAファイルの読み込み
-            const gltfVrma = await loader.loadAsync(`./models/${this.settings.animation}`);
-            const vrmAnimation = gltfVrma.userData.vrmAnimations[0];
+            // VRMファイルの読み込み
+            let modelUrl;
             
-            // アニメーションクリップを作成
-            const clip = createVRMAnimationClip(vrmAnimation, this.vrm);
+            // カスタムファイルかどうかを確認
+            const characterSelect = document.getElementById('characterSelect');
+            const selectedOption = characterSelect.querySelector(`option[value="${this.settings.character}"]`);
             
-            // 既存のアニメーションを停止
-            this.mixer.stopAllAction();
+            if (selectedOption && selectedOption.dataset.localUrl) {
+                // カスタムアップロードファイルの場合
+                modelUrl = selectedOption.dataset.localUrl;
+            } else {
+                // デフォルトファイルの場合
+                modelUrl = `./models/${this.settings.character}`;
+            }
             
-            // 新しいアニメーションを再生
-            const action = this.mixer.clipAction(clip);
-            action.play();
+            const gltfVrm = await loader.loadAsync(modelUrl);
+            this.vrm = gltfVrm.userData.vrm;
             
-            console.log('Animation loaded:', this.settings.animation);
+            // パフォーマンス最適化
+            VRMUtils.removeUnnecessaryVertices(this.vrm.scene);
+            VRMUtils.removeUnnecessaryJoints(this.vrm.scene);
+            
+            // フラスタムカリングを無効化
+            this.vrm.scene.traverse((obj) => {
+                obj.frustumCulled = false;
+                obj.castShadow = true;
+                obj.receiveShadow = true;
+            });
+            
+            // LookAtクォータニオンプロキシを追加
+            const lookAtQuatProxy = new VRMLookAtQuaternionProxy(this.vrm.lookAt);
+            lookAtQuatProxy.name = 'lookAtQuaternionProxy';
+            this.vrm.scene.add(lookAtQuatProxy);
+            
+            // シーンに追加（初期は非表示）
+            this.scene.add(this.vrm.scene);
+            this.vrm.scene.visible = false;
+            this.isCharacterVisible = false;
+            
+            // アニメーションミキサーを作成
+            this.mixer = new THREE.AnimationMixer(this.vrm.scene);
+            
+            // T-poseを回避するため、デフォルトポーズを設定
+            if (this.vrm.humanoid) {
+                this.vrm.humanoid.resetNormalizedPose();
+                console.log('VRM normalized pose reset completed');
+            }
+            
+            // 登場アニメーションを再生（キャラクター変更時）
+            this.playAppearingAnimation();
+            
+            this.hideLoading();
+            console.log('Character loaded successfully with appearing animation:', this.vrm);
             
         } catch (error) {
-            console.error('Failed to load animation:', error);
+            console.error('Failed to load character with appearing:', error);
+            this.showError('キャラクターの読み込みに失敗しました');
+            this.hideLoading();
         }
     }
     
     /**
-     * 感情に基づくアニメーション再生
+     * glTFアニメーション（VRMA形式）の読み込み
+     */
+    async loadGLTFAnimation(animationPath, options = {}) {
+        try {
+            if (!this.vrm || !this.mixer) return null;
+            
+            const loader = new GLTFLoader();
+            // VRMAnimationLoaderPluginを使用してVRMA形式を読み込み
+            loader.register((parser) => new VRMAnimationLoaderPlugin(parser));
+            
+            // ファイル存在チェック（フェッチで確認）
+            try {
+                const response = await fetch(animationPath, { method: 'HEAD' });
+                if (!response.ok) {
+                    console.warn(`Animation file not found: ${animationPath}`);
+                    return null;
+                }
+            } catch (fetchError) {
+                console.warn(`Failed to check animation file: ${animationPath}`, fetchError);
+                return null;
+            }
+            
+            // glTFファイルの読み込み（VRMA拡張付き）
+            const gltf = await loader.loadAsync(animationPath);
+            
+            // VRMAアニメーションデータを取得
+            const vrmAnimation = gltf.userData.vrmAnimations?.[0];
+            if (!vrmAnimation) {
+                console.warn('No VRM animations found in glTF file:', animationPath);
+                return null;
+            }
+            
+            // VRMアニメーションクリップを作成
+            const clip = createVRMAnimationClip(vrmAnimation, this.vrm);
+            
+            // アニメーションアクションを作成
+            const action = this.mixer.clipAction(clip);
+            
+            // オプション設定
+            if (options.loop !== undefined) {
+                action.setLoop(options.loop ? THREE.LoopRepeat : THREE.LoopOnce);
+            }
+            if (options.weight !== undefined) {
+                action.setEffectiveWeight(options.weight);
+            }
+            
+            return {
+                action: action,
+                clip: clip,
+                duration: clip.duration
+            };
+            
+        } catch (error) {
+            console.error('Failed to load glTF animation:', error);
+            console.warn(`Skipping animation: ${animationPath}`);
+            return null;
+        }
+    }
+
+    /**
+     * アニメーション再生
+     */
+    async playAnimation(animationType, options = {}) {
+        if (!this.vrm || !this.mixer) return;
+
+        // アニメーション種別に応じてパスを決定
+        let animationPath;
+        let isIdleType = false;
+
+        switch (animationType) {
+            case 'talking':
+            case 'idle':
+                animationPath = await this.getRandomIdleAnimation();
+                isIdleType = true;
+                break;
+            default:
+                // カスタムパスが指定された場合
+                animationPath = animationType;
+        }
+
+        if (!animationPath) return;
+
+        // アニメーション状態を更新
+        this.updateAnimationState(isIdleType ? 'idle' : animationType);
+
+        // 新しいアニメーションを読み込み
+        const animationData = await this.loadGLTFAnimation(animationPath, options);
+        if (!animationData) {
+            // アニメーションの読み込みに失敗した場合のフォールバック
+            console.warn(`Animation failed to load, trying basic idle: ${animationPath}`);
+            
+            // lying-sequenceが失敗した場合は通常のアイドルアニメーションのみを試行
+            const basicIdleAnimations = [
+                './models/appearing.vrma',
+                './models/liked.vrma',
+                './models/waiting.vrma'
+            ];
+            
+            const fallbackAnimation = basicIdleAnimations[Math.floor(Math.random() * basicIdleAnimations.length)];
+            const fallbackData = await this.loadGLTFAnimation(fallbackAnimation, options);
+            
+            if (!fallbackData) {
+                console.error('Critical: No animations could be loaded');
+                return;
+            }
+            
+            // フォールバックアニメーションを使用
+            this.playAnimationDirect(fallbackData, options, true);
+            return;
+        }
+
+        // 正常なアニメーション再生
+        this.playAnimationDirect(animationData, options, isIdleType);
+    }
+
+    /**
+     * アニメーションを直接再生する共通関数
+     */
+    playAnimationDirect(animationData, options = {}, isIdleType = false) {
+        if (!animationData || !this.mixer) return;
+
+        // 現在再生中のアクションを取得
+        const currentActions = this.mixer._actions.filter(action => action.isRunning());
+        
+        // 新しいアニメーションの設定
+        const newAction = animationData.action;
+        newAction.reset();
+        
+        if (!options.loop) {
+            newAction.setLoop(THREE.LoopOnce);
+            newAction.clampWhenFinished = true;
+        } else if (isIdleType) {
+            // アイドルアニメーションは一回だけ再生して次に移行
+            newAction.setLoop(THREE.LoopOnce);
+            newAction.clampWhenFinished = true;
+        }
+
+        // スムーズな切り替えのためのクロスフェード
+        if (currentActions.length > 0) {
+            // 現在のアニメーションから新しいアニメーションにクロスフェード
+            const fadeTime = 0.2; // 0.2秒でフェード
+            
+            currentActions.forEach(currentAction => {
+                currentAction.crossFadeTo(newAction, fadeTime, false);
+            });
+            
+            newAction.play();
+        } else {
+            // 最初のアニメーションまたは緊急時の直接再生
+            this.mixer.stopAllAction();
+            newAction.play();
+        }
+
+        console.log('Playing animation:', animationData.clip.name || 'Unknown animation');
+
+        // アニメーション終了時の処理を統一
+        const onFinished = () => {
+            this.mixer.removeEventListener('finished', onFinished);
+            
+            if (options.onFinished) {
+                options.onFinished();
+                return; // カスタムコールバックがある場合はそれを優先
+            }
+            
+            // アイドルアニメーションの場合は、少し待ってから次のアニメーションを再生
+            if (isIdleType) {
+                setTimeout(() => {
+                    this.scheduleNextIdleAnimation();
+                }, 1000); // 1秒の間隔を設ける
+            } else if (!options.loop) {
+                // 非ループアニメーションの場合、アイドルアニメーションに戻る
+                setTimeout(() => {
+                    this.playAnimation('idle', { loop: true });
+                }, 500);
+            }
+        };
+
+        this.mixer.addEventListener('finished', onFinished);
+    }
+
+    /**
+     * ランダムアイドルアニメーション選択
+     */
+    async getRandomIdleAnimation() {
+        // 全てのアニメーションファイルを含むアイドルローテーション
+        const idleAnimations = [
+            // トップレベルのVRMAファイル
+            './models/liked.vrma',
+            './models/waiting.vrma',
+            
+            // idleフォルダ内のVRMAファイル
+            './models/idle/idle2_out/idle2.vrma',
+            './models/idle/idle3_out/idle3.vrma', 
+            './models/idle/idle4_out/idle4.vrma',
+            
+            // より多様性を持たせるため、一部を複数回含める
+            './models/liked.vrma',
+            './models/waiting.vrma',
+            './models/idle/idle2_out/idle2.vrma',
+            './models/idle/idle3_out/idle3.vrma'
+        ];
+        
+        // 前回と同じアニメーションを避ける
+        let availableAnimations = idleAnimations;
+        if (this.lastPlayedAnimation) {
+            availableAnimations = idleAnimations.filter(anim => anim !== this.lastPlayedAnimation);
+            
+            // もし前回のアニメーションを除外すると候補がなくなる場合、全候補を使用
+            if (availableAnimations.length === 0) {
+                availableAnimations = idleAnimations;
+            }
+        }
+        
+        // ランダム選択
+        const randomIndex = Math.floor(Math.random() * availableAnimations.length);
+        const selectedAnimation = availableAnimations[randomIndex];
+        
+        // 選択したアニメーションを記録
+        this.lastPlayedAnimation = selectedAnimation;
+        
+        return selectedAnimation;
+    }
+
+    /**
+     * 次のアイドルアニメーションをスケジュール
+     */
+    async scheduleNextIdleAnimation() {
+        if (this.isSchedulingNextAnimation) {
+            console.log('Already scheduling next animation, skipping...');
+            return;
+        }
+        
+        this.isSchedulingNextAnimation = true;
+        
+        try {
+            console.log('Scheduling next idle animation...');
+            await this.playAnimation('idle', { loop: true });
+        } catch (error) {
+            console.error('Error scheduling next animation:', error);
+        } finally {
+            this.isSchedulingNextAnimation = false;
+        }
+    }
+
+    /**
+     * 初期登場アニメーション（appearing）を再生
+     */
+    async playAppearingAnimation() {
+        console.log(`[Debug] playAppearingAnimation called - hasPlayedAppearing: ${this.hasPlayedAppearing}, vrm: ${!!this.vrm}, mixer: ${!!this.mixer}`);
+        
+        if (this.hasPlayedAppearing || !this.vrm || !this.mixer) {
+            console.log('[Debug] Skipping appearing animation due to conditions');
+            return;
+        }
+        
+        console.log('Playing appearing animation...');
+        
+        // appearing アニメーションを読み込み
+        const animationData = await this.loadGLTFAnimation('./models/appearing.vrma', { loop: false });
+        if (!animationData) {
+            console.error('Failed to load appearing animation');
+            // フォールバック: キャラクターを表示してアイドルアニメーションを開始
+            this.showCharacterAndStartIdle();
+            return;
+        }
+        
+        // アニメーション設定
+        const action = animationData.action;
+        action.reset();
+        action.setLoop(THREE.LoopOnce);
+        action.clampWhenFinished = true;
+        
+        // キャラクターを表示してアニメーション開始
+        this.vrm.scene.visible = true;
+        this.isCharacterVisible = true;
+        action.play();
+        
+        console.log('Appearing animation started, character is now visible');
+        
+        // アニメーション終了時の処理
+        const onAppearingFinished = () => {
+            this.mixer.removeEventListener('finished', onAppearingFinished);
+            this.hasPlayedAppearing = true;
+            this.isCharacterInitialized = true;
+            console.log('Appearing animation completed');
+            
+            // appearing 終了後は必ず waiting アニメーションを再生
+            this.playWaitingAnimation();
+        };
+        
+        this.mixer.addEventListener('finished', onAppearingFinished);
+    }
+    
+    /**
+     * キャラクターを表示してアイドルアニメーション開始（フォールバック用）
+     */
+    showCharacterAndStartIdle() {
+        if (!this.vrm) return;
+        
+        this.vrm.scene.visible = true;
+        this.isCharacterVisible = true;
+        this.hasPlayedAppearing = true;
+        this.isCharacterInitialized = true;
+        
+        // waiting アニメーションを再生
+        this.playWaitingAnimation();
+    }
+    
+    /**
+     * waiting アニメーションを再生
+     */
+    async playWaitingAnimation() {
+        if (!this.vrm || !this.mixer) return;
+        
+        console.log('Playing waiting animation...');
+        
+        const animationData = await this.loadGLTFAnimation('./models/waiting.vrma', { loop: false });
+        if (!animationData) {
+            console.warn('Failed to load waiting animation, falling back to idle');
+            this.scheduleNextIdleAnimation();
+            return;
+        }
+        
+        this.playAnimationDirect(animationData, { 
+            loop: false,
+            onFinished: () => {
+                console.log('Waiting animation completed, starting normal idle rotation');
+                setTimeout(() => {
+                    this.scheduleNextIdleAnimation();
+                }, 1000);
+            }
+        }, false);
+    }
+
+    /**
+     * liked アニメーションを再生（チャット応答時・アイドル時両用）
+     */
+    async playLikedAnimation() {
+        if (!this.vrm || !this.mixer) return;
+        
+        console.log('Playing liked animation...');
+        
+        const animationData = await this.loadGLTFAnimation('./models/liked.vrma', { loop: false });
+        if (!animationData) {
+            console.warn('Failed to load liked animation, falling back to idle');
+            this.scheduleNextIdleAnimation();
+            return;
+        }
+        
+        this.playAnimationDirect(animationData, { 
+            loop: false,
+            onFinished: () => {
+                console.log('Liked animation completed, returning to idle rotation');
+                setTimeout(() => {
+                    this.scheduleNextIdleAnimation();
+                }, 1000);
+            }
+        }, false);
+    }
+
+    /**
+     * アイドル復帰タイマーを開始
+     */
+    startIdleTimer() {
+        // 既存のタイマーをクリア
+        if (this.idleTimer) {
+            clearTimeout(this.idleTimer);
+        }
+        
+        // 一定時間後にアイドルアニメーションに復帰
+        this.idleTimer = setTimeout(() => {
+            if (this.currentAnimationType !== 'idle') {
+                console.log('[Debug] Auto-returning to idle animation');
+                this.playAnimation('idle', { loop: true });
+            }
+        }, this.idleTimeout);
+    }
+
+    /**
+     * アイドルタイマーを停止
+     */
+    stopIdleTimer() {
+        if (this.idleTimer) {
+            clearTimeout(this.idleTimer);
+            this.idleTimer = null;
+        }
+    }
+
+    /**
+     * アニメーション状態の更新
+     */
+    updateAnimationState(animationType) {
+        this.currentAnimationType = animationType;
+        
+        // アイドル以外のアニメーション時はタイマーを停止
+        if (animationType !== 'idle') {
+            this.stopIdleTimer();
+        }
+    }
+    
+    /**
+     * 感情に基づくアニメーション再生（glTF版）
      */
     playEmotionAnimation(emotion, personality = 'friendly', isTechExcited = false) {
         if (!this.vrm || !this.mixer) return;
-        
+
         let selectedEmotion = emotion;
-        
+
         // レイキャラクターの技術興奮時は強制的にhappyに
         if (personality === 'rei_engineer' && isTechExcited) {
             selectedEmotion = 'happy';
             console.log('[Debug] Rei tech excitement: forcing happy emotion');
         }
-        
-        const emotionAnimations = {
-            happy: 'taisou.vrma',
-            sad: 'utu.vrma',
-            surprised: 'zenshinwomiseru.vrma',
-            neutral: 'animation.vrma'
-        };
-        
-        const animationFile = emotionAnimations[selectedEmotion] || emotionAnimations.neutral;
-        
-        if (animationFile !== this.settings.animation) {
-            this.settings.animation = animationFile;
-            this.loadAnimation();
-        }
-        
+
+        // すべての感情でアイドルアニメーションを再生
+        // sad感情も他の感情と同様にアイドルアニメーションローテーションに参加
+        this.playAnimation('idle', { loop: true });
+
         // 表情も変更（キャラクター別強度調整）
         this.setExpression(selectedEmotion, personality, isTechExcited);
-        
+
         this.currentEmotion = selectedEmotion;
         console.log(`[Debug] Playing emotion animation: ${selectedEmotion} for ${personality}${isTechExcited ? ' (tech excited)' : ''}`);
-        
+
         // キャラクター情報を更新
         this.updateCharacterMood(selectedEmotion);
     }
@@ -815,6 +1410,43 @@ class AIWifeApp {
         
         // 表情変更後、新しいブリンクをスケジュール
         this.scheduleNextBlink();
+    }
+    
+    /**
+     * 表情を完全にリセット（ニュートラル状態に戻す）
+     */
+    resetToNeutralExpression() {
+        if (!this.vrm || !this.vrm.expressionManager) return;
+        
+        console.log('[Debug] Resetting all expressions to neutral state');
+        
+        const expressionManager = this.vrm.expressionManager;
+        
+        // 全ての感情表情を0にリセット
+        expressionManager.setValue('happy', 0);
+        expressionManager.setValue('sad', 0);
+        expressionManager.setValue('surprised', 0);
+        expressionManager.setValue('angry', 0);
+        expressionManager.setValue('relaxed', 0);
+        
+        // リップシンク関連も完全リセット
+        expressionManager.setValue('aa', 0);
+        expressionManager.setValue('ih', 0);
+        expressionManager.setValue('ou', 0);
+        
+        // ブリンク状態を完全リセット
+        expressionManager.setValue('blink', 0);
+        this.isBlinking = false;
+        this.lipSyncWeight = 0.0;
+        
+        // 現在の表情状態を更新
+        this.currentExpression = 'neutral';
+        this.currentEmotion = 'neutral';
+        
+        // 新しいブリンクサイクルを開始
+        this.scheduleNextBlink();
+        
+        console.log('[Debug] Expression reset completed - all values set to 0, blink cycle restarted');
     }
     
     /**
@@ -956,11 +1588,201 @@ class AIWifeApp {
     /**
      * メッセージレスポンス処理（3D UI専用）- キャラクター対応版
      */
+    /**
+     * ストリーミングチャンクメッセージ処理
+     */
+    handleMessageChunk(data) {
+        console.log('[Debug] Received message chunk:', data.chunk_index, data.text);
+        console.log('[Debug] Audio data present:', !!data.audio_data);
+        console.log('[Debug] Audio data size:', data.audio_data ? data.audio_data.length : 0);
+        
+        // チャンクをマップに保存
+        this.receivedChunks.set(data.chunk_index, data);
+        
+        // 音声データがある場合はキューに追加
+        if (data.audio_data) {
+            console.log('[Debug] Adding audio chunk to queue:', data.chunk_index);
+            this.audioChunkQueue.push({
+                index: data.chunk_index,
+                audio: data.audio_data,
+                text: data.text,
+                emotion: data.emotion
+            });
+            
+            console.log('[Debug] Audio queue length:', this.audioChunkQueue.length);
+            console.log('[Debug] Is playing audio:', this.isPlayingAudio);
+            
+            // 順次再生を開始（初回のみ）
+            if (!this.isPlayingAudio) {
+                console.log('[Debug] Starting audio chunk playback');
+                this.startAudioChunkPlayback();
+            }
+        } else {
+            console.log('[Debug] No audio data in chunk:', data.chunk_index);
+        }
+        
+        // テキストを蓄積
+        this.fullResponseText += data.text;
+        
+        // AR吹き出しを更新（最新チャンクのテキストで）
+        this.showARSpeechBubble(data.text);
+        
+        // 感情アニメーション
+        if (data.emotion) {
+            this.playEmotionAnimation(data.emotion, data.personality);
+        }
+        
+        // 初回チャンクでトークアニメーション開始
+        if (data.chunk_index === 1) {
+            this.playAnimation('talking', { loop: true });
+        }
+    }
+    
+    /**
+     * ストリーミング完了処理
+     */
+    handleStreamingComplete(data) {
+        console.log('[Debug] Streaming complete:', data);
+        console.log('[Debug] Total chunks received:', this.receivedChunks.size);
+        console.log('[Debug] Audio queue length at completion:', this.audioChunkQueue.length);
+        this.hideLoading();
+        
+        // 完全なレスポンステキストを会話履歴に追加
+        this.addMessageToConversation('assistant', data.full_text);
+        
+        // 最終的なAR吹き出し表示
+        this.showARSpeechBubble(data.full_text);
+        
+        // ストリーミングセッションをリセット
+        this.currentStreamingSession = null;
+        this.fullResponseText = '';
+        
+        console.log('[Debug] Streaming session completed and reset');
+    }
+    
+    /**
+     * 音声チャンクの順次再生
+     */
+    async startAudioChunkPlayback() {
+        if (this.isPlayingAudio) return;
+        
+        this.isPlayingAudio = true;
+        this.audioPlaybackIndex = 1; // 1から開始
+        
+        console.log('[Debug] Starting audio chunk playback');
+        
+        while (this.audioChunkQueue.length > 0 || this.shouldWaitForMoreChunks()) {
+            // 次のチャンクが来るまで待機
+            const chunk = this.getNextAudioChunk();
+            
+            if (chunk) {
+                console.log(`[Debug] Playing audio chunk ${chunk.index}`);
+                
+                try {
+                    await this.playAudioChunk(chunk);
+                    this.audioPlaybackIndex++;
+                } catch (error) {
+                    console.error(`[Error] Failed to play audio chunk ${chunk.index}:`, error);
+                    this.audioPlaybackIndex++;
+                }
+            } else {
+                // チャンクが来るまで少し待機
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+        }
+        
+        // 全ての音声再生完了
+        this.isPlayingAudio = false;
+        console.log('[Debug] Audio chunk playback completed');
+        
+        // アイドルアニメーションに戻る
+        this.playAnimation('idle', { loop: true });
+    }
+    
+    /**
+     * 次の音声チャンクを取得
+     */
+    getNextAudioChunk() {
+        // 期待するインデックスのチャンクを探す
+        const chunkIndex = this.audioChunkQueue.findIndex(chunk => chunk.index === this.audioPlaybackIndex);
+        
+        if (chunkIndex !== -1) {
+            return this.audioChunkQueue.splice(chunkIndex, 1)[0];
+        }
+        
+        return null;
+    }
+    
+    /**
+     * より多くのチャンクを待つべきかを判定
+     */
+    shouldWaitForMoreChunks() {
+        // ストリーミングが完了していない、または待機中のチャンクがある場合
+        return this.currentStreamingSession !== null || this.audioChunkQueue.length > 0;
+    }
+    
+    /**
+     * 個別音声チャンクを再生
+     */
+    async playAudioChunk(chunk) {
+        console.log(`[Debug] Attempting to play audio chunk ${chunk.index}`);
+        console.log(`[Debug] Audio data format:`, chunk.audio.substring(0, 50));
+        
+        return new Promise((resolve, reject) => {
+            try {
+                const audio = new Audio(chunk.audio);
+                audio.volume = this.settings.volume;
+                audio.playbackRate = this.settings.voiceSpeed;
+                
+                console.log(`[Debug] Audio object created for chunk ${chunk.index}`);
+                console.log(`[Debug] Volume: ${audio.volume}, PlaybackRate: ${audio.playbackRate}`);
+                
+                // リップシンクの設定
+                this.setupLipSync(audio);
+                
+                audio.onloadstart = () => {
+                    console.log(`[Debug] Audio chunk ${chunk.index} load started`);
+                };
+                
+                audio.oncanplay = () => {
+                    console.log(`[Debug] Audio chunk ${chunk.index} can play`);
+                };
+                
+                audio.onended = () => {
+                    console.log(`[Debug] Audio chunk ${chunk.index} ended`);
+                    resolve();
+                };
+                
+                audio.onerror = (error) => {
+                    console.error(`[Debug] Audio chunk ${chunk.index} error:`, error);
+                    console.error(`[Debug] Audio error details:`, audio.error);
+                    reject(error);
+                };
+                
+                console.log(`[Debug] Starting play() for chunk ${chunk.index}`);
+                audio.play().then(() => {
+                    console.log(`[Debug] Audio chunk ${chunk.index} started playing successfully`);
+                }).catch((error) => {
+                    console.error(`[Debug] Audio chunk ${chunk.index} play() failed:`, error);
+                    reject(error);
+                });
+                
+            } catch (error) {
+                console.error(`[Debug] Exception in playAudioChunk ${chunk.index}:`, error);
+                reject(error);
+            }
+        });
+    }
+
     handleMessageResponse(data) {
         console.log('[Debug] Received message response:', data);
         console.log('[Debug] Character personality:', data.personality);
-        console.log('[Debug] Tech excited state:', data.is_tech_excited);
+        console.log('[Debug] Audio data present:', !!data.audio_data);
+        console.log('[Debug] Audio data length:', data.audio_data ? data.audio_data.length : 0);
         this.hideLoading();
+        
+        // AIレスポンスを会話履歴に追加
+        this.addMessageToConversation('assistant', data.text);
         
         // キャラクター別の音声設定を適用
         this.applyCharacterSettings(data.personality, data.is_tech_excited);
@@ -973,9 +1795,15 @@ class AIWifeApp {
             this.playEmotionAnimation(data.emotion, data.personality, data.is_tech_excited);
         }
         
+        // AI応答時は liked アニメーションを再生（より魅力的な応答）
+        this.playLikedAnimation();
+        
         // 音声再生
-        if (data.audio_url) {
-            this.playAudio(data.audio_url);
+        if (data.audio_data) {
+            console.log('[Debug] Starting audio playback');
+            this.playAudioData(data.audio_data);
+        } else {
+            console.log('[Debug] No audio data to play');
         }
     }
     
@@ -1018,9 +1846,15 @@ class AIWifeApp {
         console.log('[Debug] Received audio response:', data); // ★ デバッグログ追加
         this.hideLoading();
         
-        // 認識テキストをコンソールログ出力
+        // 認識テキストを会話履歴に追加（ユーザーメッセージ）
         if (data.transcribed_text) {
             console.log('Transcribed:', data.transcribed_text);
+            this.addMessageToConversation('user', data.transcribed_text);
+        }
+        
+        // AIレスポンスを会話履歴に追加
+        if (data.response_text) {
+            this.addMessageToConversation('assistant', data.response_text);
         }
         
         // AR吹き出しで応答を表示
@@ -1032,8 +1866,8 @@ class AIWifeApp {
         }
         
         // 音声再生
-        if (data.audio_url) {
-            this.playAudio(data.audio_url);
+        if (data.audio_data) {
+            this.playAudioData(data.audio_data);
         }
     }
     
@@ -1140,7 +1974,7 @@ class AIWifeApp {
             this.socket.emit('send_audio', {
                 session_id: this.sessionId,
                 audio_data: audioData.map(b => b.toString(16).padStart(2, '0')).join(''),
-                voice_actor_id: this.settings.voiceActorId
+                voice_id: this.settings.voiceId
             });
             
         } catch (error) {
@@ -1197,11 +2031,11 @@ class AIWifeApp {
                     this.vrm.expressionManager.setValue('ih', 0);
                     this.vrm.expressionManager.setValue('ou', 0);
                     
-                    // 表情をneutralに戻す
+                    // 表情を完全リセット（新しいメソッドを使用）
                     setTimeout(() => {
-                        this.setExpression('neutral');
-                        console.log('[Debug] Expression reset to neutral after audio ended');
-                    }, 500); // 0.5秒後にneutralに戻す
+                        this.resetToNeutralExpression();
+                        console.log('[Debug] Expression completely reset to neutral after audio ended');
+                    }, 500); // 0.5秒後に完全リセット
                 }
             });
 
@@ -1227,6 +2061,131 @@ class AIWifeApp {
             console.log('[Debug] Using fallback lip sync animation due to error');
             this.simulateBasicLipSync();
             this.showError('音声処理でエラーが発生しました。');
+        }
+    }
+    
+    /**
+     * Base64エンコードされた音声データを再生
+     */
+    playAudioData(audioData) {
+        console.log('[Debug] playAudioData called with data:', audioData ? 'Data received' : 'No data');
+        console.log('[Debug] Audio data format check:', audioData ? audioData.substring(0, 50) : 'No data');
+        
+        try {
+            if (!audioData) {
+                console.log('[Debug] No audio data provided. Skipping playback.');
+                // 音声データがない場合でもアイドル状態に戻る
+                this.startIdleTimer();
+                return;
+            }
+
+            // Base64データから音声オブジェクトを作成
+            const audio = new Audio(audioData);
+            console.log('[Debug] Created Audio object from base64 data');
+            console.log('[Debug] Audio object created successfully:', !!audio);
+
+            audio.volume = this.settings.volume;
+            audio.playbackRate = this.settings.voiceSpeed;
+            console.log('[Debug] Audio settings - Volume:', audio.volume, 'PlaybackRate:', audio.playbackRate);
+
+            // エラーハンドリングを強化
+            audio.addEventListener('error', (e) => {
+                console.error('[Debug] Audio error event:', e);
+                console.error('[Debug] Audio error details:', audio.error);
+                console.error('[Debug] Audio error code:', audio.error ? audio.error.code : 'No error code');
+                console.error('[Debug] Audio error message:', audio.error ? audio.error.message : 'No error message');
+            });
+
+            // 音声ロード開始
+            audio.addEventListener('loadstart', () => {
+                console.log('[Debug] Audio load started');
+            });
+
+            // 音声ロード完了後にリップシンクセットアップ
+            audio.addEventListener('loadeddata', () => {
+                console.log('[Debug] Audio loaded successfully, setting up lip sync');
+                try {
+                    this.setupLipSync(audio);
+                } catch (error) {
+                    console.warn('Lip sync setup failed, using fallback:', error);
+                    this.simulateBasicLipSync();
+                }
+            });
+
+            // 音声再生可能状態
+            audio.addEventListener('canplay', () => {
+                console.log('[Debug] Audio can play');
+            });
+
+            // 音声再生開始
+            audio.addEventListener('play', () => {
+                console.log('[Debug] Audio playback started');
+            });
+
+            // 音声再生終了時のクリーンアップ
+            audio.addEventListener('ended', () => {
+                console.log('[Debug] Audio playback ended');
+                this.lipSyncWeight = 0.0;
+                if (this.vrm && this.vrm.expressionManager) {
+                    // リップシンク関連の値をリセット
+                    this.vrm.expressionManager.setValue('aa', 0);
+                    this.vrm.expressionManager.setValue('ih', 0);
+                    this.vrm.expressionManager.setValue('ou', 0);
+                    
+                    // 表情をneutralに戻す
+                    setTimeout(() => {
+                        this.setExpression('neutral');
+                        console.log('[Debug] Expression reset to neutral after audio ended');
+                    }, 500); // 0.5秒後にneutralに戻す
+                }
+                
+                // 音声終了後、少し待ってからアイドルアニメーションに復帰
+                setTimeout(() => {
+                    this.startIdleTimer();
+                }, 1000);
+            });
+
+            // エラーハンドリング
+            audio.addEventListener('error', (e) => {
+                console.error('[Debug] Audio error:', e);
+                console.log('[Debug] Falling back to basic lip sync animation');
+                this.simulateBasicLipSync();
+                this.startIdleTimer();
+            });
+
+            console.log('[Debug] Attempting to play audio...');
+            
+            // 音声再生の実行
+            const playPromise = audio.play();
+            
+            if (playPromise !== undefined) {
+                playPromise.then(() => {
+                    console.log('[Debug] Audio play() promise resolved successfully');
+                }).catch((error) => {
+                    console.error('[Debug] Audio play() promise rejected:', error);
+                    console.error('[Debug] Error name:', error.name);
+                    console.error('[Debug] Error message:', error.message);
+                    
+                    // 自動再生がブロックされた場合の処理
+                    if (error.name === 'NotAllowedError') {
+                        console.log('[Debug] Autoplay was prevented. User interaction required.');
+                        // ユーザーに音声再生の許可を求める（必要に応じて）
+                    }
+                    
+                    console.log('[Debug] Using fallback lip sync animation');
+                    this.simulateBasicLipSync();
+                    this.startIdleTimer();
+                });
+            } else {
+                console.log('[Debug] Audio play() returned undefined (older browser)');
+            }
+
+        } catch (error) {
+            console.error('Error in playAudioData:', error);
+            console.log('[Debug] Using fallback lip sync animation due to error');
+            this.simulateBasicLipSync();
+            this.showError('音声処理でエラーが発生しました。');
+            this.startIdleTimer();
         }
     }
     
@@ -1313,11 +2272,11 @@ class AIWifeApp {
                 this.lipSyncWeight = 0.0;
                 this.updateMouthExpression();
                 
-                // 表情をneutralに戻す
+                // 表情を完全リセット（新しいメソッドを使用）
                 setTimeout(() => {
-                    this.setExpression('neutral');
-                    console.log('[Debug] Expression reset to neutral after lip sync simulation ended');
-                }, 500); // 0.5秒後にneutralに戻す
+                    this.resetToNeutralExpression();
+                    console.log('[Debug] Expression completely reset to neutral after lip sync simulation ended');
+                }, 500); // 0.5秒後に完全リセット
             }
         };
         
@@ -1391,45 +2350,31 @@ class AIWifeApp {
         }
     }
     
+
     /**
-     * にじボイスのキャラクター一覧を読み込んでUIに反映
+     * キャラクター別のデフォルト設定（音声・モデル）を適用
      */
-    async populateVoiceActors() {
-        try {
-            const response = await fetch('/api/voice-actors');
-            if (!response.ok) {
-                throw new Error(`API request failed with status ${response.status}`);
+    setCharacterDefaultVoice(personality) {
+        const characterSettings = {
+            'rei_engineer': {
+                voiceId: 'gARvXPexe5VF3cKZBian', //mitsuki
+                model: 'avatar.vrm' // レイのモデル
+            },
+            'yui_natural': {
+                voiceId: 'vGQNBgLaiM3EdZtxIiuY', // kawaiiairlicita
+                model: 'yui.vrm' // ユイのモデル
             }
-            const data = await response.json();
-            const selectElement = document.getElementById('voiceActorSelect');
+        };
+        
+        const characterConfig = characterSettings[personality];
+        if (characterConfig) {
+            // 音声ID設定
+            this.settings.voiceId = characterConfig.voiceId;
+            console.log(`[Debug] Character voice set to: ${this.settings.voiceId} for ${personality}`);
             
-            selectElement.innerHTML = '';
-
-            if (data.voiceActors && data.voiceActors.length > 0) {
-                // ★★★★★ ここからが重要 ★★★★★
-                // 1. デフォルトのボイスIDを、リストの最初の有効なIDに設定する
-                if (!this.settings.voiceActorId) {
-                    this.settings.voiceActorId = data.voiceActors[0].id;
-                    console.log(`[Debug] Default voice actor ID set to: ${this.settings.voiceActorId}`);
-                }
-                // ★★★★★ ここまで ★★★★★
-
-                // Populate new options
-                data.voiceActors.forEach(actor => {
-                    const option = document.createElement('option');
-                    option.value = actor.id;
-                    option.textContent = `${actor.name} (${actor.gender}, ${actor.age}歳)`;
-                    if (actor.id === this.settings.voiceActorId) {
-                        option.selected = true;
-                    }
-                    selectElement.appendChild(option);
-                });
-            } else {
-                 this.showError('利用可能なボイスが見つかりませんでした。');
-            }
-        } catch (error) {
-            console.error('Failed to populate voice actors:', error);
-            this.showError('ボイス一覧の取得に失敗しました');
+            // モデル設定（設定のみ、実際のロードは呼び出し元で行う）
+            this.settings.character = characterConfig.model;
+            console.log(`[Debug] Character model set to: ${this.settings.character} for ${personality}`);
         }
     }
     
@@ -1499,15 +2444,23 @@ class AIWifeApp {
     }
     
     /**
-     * エラー表示
+     * エラー表示（高速化版）
      */
     showError(message) {
         this.elements.errorMessage.textContent = message;
         this.elements.errorToast.style.display = 'flex';
         
+        // エラートーストの表示時間を短縮（5秒 → 3秒）
         setTimeout(() => {
             this.hideErrorToast();
-        }, 5000);
+        }, 3000);
+    }
+    
+    /**
+     * エラートースト表示（showErrorToast関数の追加）
+     */
+    showErrorToast(message) {
+        this.showError(message);
     }
     
     hideErrorToast() {
@@ -1556,26 +2509,503 @@ class AIWifeApp {
                 const deleteReq = indexedDB.deleteDatabase('AIWifeMemory');
                 deleteReq.onsuccess = () => {
                     console.log('Memory reset successfully');
-                    this.showError('記憶をリセットしました');
+                    this.showErrorToast('記憶をリセットしました');
+                };
+                deleteReq.onerror = () => {
+                    console.error('Failed to reset memory');
+                    this.showErrorToast('記憶のリセットに失敗しました');
                 };
             }
             
+            // 会話履歴をクリア
+            this.conversationMessages = [];
+            
             // 新しいセッションIDを生成
             this.sessionId = this.generateSessionId();
+            console.log('New session started after memory reset:', this.sessionId);
             
-            // チャット履歴をクリア
-            this.elements.chatMessages.innerHTML = `
-                <div class="message assistant-message">
-                    <div class="message-avatar">
-                        <i class="fas fa-robot"></i>
-                    </div>
-                    <div class="message-content">
-                        <div class="message-text">こんにちは！私はあなたのAI Wifeです。何かお話ししましょう！</div>
-                        <div class="message-timestamp">今</div>
-                    </div>
+            // 成功メッセージ
+            this.showErrorToast('記憶をリセットしました');
+        }
+    }
+
+    /**
+     * チャット履歴サイドバーを開閉
+     */
+    toggleChatHistory() {
+        this.elements.chatHistorySidebar.classList.toggle('open');
+        if (this.elements.chatHistorySidebar.classList.contains('open')) {
+            this.loadChatHistory();
+        }
+    }
+
+    /**
+     * チャット履歴サイドバーを閉じる
+     */
+    closeChatHistory() {
+        this.elements.chatHistorySidebar.classList.remove('open');
+    }
+
+    /**
+     * IndexedDBからチャット履歴を読み込み
+     */
+    async loadChatHistory() {
+        try {
+            const history = await this.getChatHistoryFromDB();
+            this.displayChatHistory(history);
+        } catch (error) {
+            console.error('Error loading chat history:', error);
+            this.showErrorToast('チャット履歴の読み込みに失敗しました');
+        }
+    }
+
+    /**
+     * IndexedDBからチャット履歴を取得
+     */
+    getChatHistoryFromDB() {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open('AIWifeMemory', 2); // バージョンを2に統一
+            
+            request.onerror = () => reject(request.error);
+            
+            request.onsuccess = () => {
+                const db = request.result;
+                
+                if (!db.objectStoreNames.contains('conversations')) {
+                    resolve([]);
+                    return;
+                }
+                
+                const transaction = db.transaction(['conversations'], 'readonly');
+                const store = transaction.objectStore('conversations');
+                const getAllRequest = store.getAll();
+                
+                getAllRequest.onsuccess = () => {
+                    const conversations = getAllRequest.result || [];
+                    // 日付順でソート（新しい順）
+                    conversations.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+                    resolve(conversations);
+                };
+                
+                getAllRequest.onerror = () => reject(getAllRequest.error);
+            };
+            
+            request.onupgradeneeded = (event) => {
+                const db = event.target.result;
+                
+                // 既存のストアを削除して再作成
+                if (db.objectStoreNames.contains('conversations')) {
+                    db.deleteObjectStore('conversations');
+                }
+                
+                // 新しいストアを作成
+                const store = db.createObjectStore('conversations', { keyPath: 'id', autoIncrement: true });
+                store.createIndex('timestamp', 'timestamp', { unique: false });
+                store.createIndex('personality', 'personality', { unique: false });
+                store.createIndex('sessionId', 'sessionId', { unique: false });
+                
+                console.log('IndexedDB schema updated for getChatHistoryFromDB');
+            };
+        });
+    }
+
+    /**
+     * チャット履歴を表示
+     */
+    displayChatHistory(conversations) {
+        const historyList = this.elements.historyList;
+        historyList.innerHTML = '';
+
+        if (conversations.length === 0) {
+            historyList.innerHTML = `
+                <div class="no-history">
+                    <i class="fas fa-comments"></i>
+                    <p>まだチャット履歴がありません</p>
                 </div>
             `;
+            return;
         }
+
+        conversations.forEach(conversation => {
+            const historyItem = this.createHistoryItem(conversation);
+            historyList.appendChild(historyItem);
+        });
+    }
+
+    /**
+     * 履歴アイテムを作成
+     */
+    createHistoryItem(conversation) {
+        const item = document.createElement('div');
+        item.className = 'history-item';
+        
+        const characterName = this.getCharacterDisplayName(conversation.personality);
+        const date = new Date(conversation.timestamp).toLocaleDateString('ja-JP', {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+        
+        const messageCount = conversation.messages ? conversation.messages.length : 0;
+        const preview = this.getConversationPreview(conversation);
+        
+        item.innerHTML = `
+            <div class="history-item-header">
+                <div class="character-name">${characterName}</div>
+                <div class="chat-date">${date}</div>
+            </div>
+            <div class="chat-preview">${preview}</div>
+            <div class="message-count">${messageCount}件</div>
+        `;
+        
+        item.addEventListener('click', () => this.loadConversation(conversation));
+        
+        return item;
+    }
+
+    /**
+     * キャラクター表示名を取得
+     */
+    getCharacterDisplayName(personality) {
+        const names = {
+            'rei_engineer': 'レイ (AIエンジニア)',
+            'yui_natural': 'ユイ (天然な癒し系)',
+            'friendly': '汎用 - 親しみやすい',
+            'shy': '汎用 - 内気',
+            'energetic': '汎用 - 元気',
+            'calm': '汎用 - 落ち着いた'
+        };
+        return names[personality] || personality;
+    }
+
+    /**
+     * 会話のプレビューを取得
+     */
+    getConversationPreview(conversation) {
+        if (!conversation.messages || conversation.messages.length === 0) {
+            return '会話が開始されていません';
+        }
+        
+        const lastMessage = conversation.messages[conversation.messages.length - 1];
+        return lastMessage.text.length > 50 
+            ? lastMessage.text.substring(0, 50) + '...'
+            : lastMessage.text;
+    }
+
+    /**
+     * 会話を読み込んで詳細表示
+     */
+    loadConversation(conversation) {
+        console.log('Loading conversation:', conversation);
+        
+        // 会話詳細をモーダルで表示
+        this.showConversationDetail(conversation);
+    }
+
+    /**
+     * 会話詳細をモーダルで表示
+     */
+    showConversationDetail(conversation) {
+        // 既存のモーダルがあれば削除
+        const existingModal = document.getElementById('conversationModal');
+        if (existingModal) {
+            existingModal.remove();
+        }
+
+        // モーダルHTML作成
+        const modal = document.createElement('div');
+        modal.id = 'conversationModal';
+        modal.className = 'conversation-modal';
+        
+        const characterName = this.getCharacterDisplayName(conversation.personality);
+        const date = new Date(conversation.timestamp).toLocaleString('ja-JP', {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+
+        let messagesHtml = '';
+        if (conversation.messages && conversation.messages.length > 0) {
+            messagesHtml = conversation.messages.map(msg => {
+                const msgDate = new Date(msg.timestamp).toLocaleTimeString('ja-JP', {
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+                const roleClass = msg.role === 'user' ? 'user-message' : 'assistant-message';
+                const roleIcon = msg.role === 'user' ? 'fas fa-user' : 'fas fa-robot';
+                
+                return `
+                    <div class="conversation-message ${roleClass}">
+                        <div class="message-avatar">
+                            <i class="${roleIcon}"></i>
+                        </div>
+                        <div class="message-content">
+                            <div class="message-text">${msg.text}</div>
+                            <div class="message-timestamp">${msgDate}</div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        } else {
+            messagesHtml = '<div class="no-messages">メッセージがありません</div>';
+        }
+
+        modal.innerHTML = `
+            <div class="modal-overlay" onclick="this.parentElement.remove()">
+                <div class="modal-content" onclick="event.stopPropagation()">
+                    <div class="modal-header">
+                        <h3>${characterName}との会話</h3>
+                        <div class="modal-date">${date}</div>
+                        <button class="modal-close" onclick="this.closest('.conversation-modal').remove()">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="conversation-messages">
+                            ${messagesHtml}
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="modal-button" onclick="this.closest('.conversation-modal').remove()">
+                            閉じる
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(modal);
+    }
+
+    /**
+     * チャット履歴を検索
+     */
+    searchChatHistory(searchTerm) {
+        const historyItems = this.elements.historyList.querySelectorAll('.history-item');
+        
+        historyItems.forEach(item => {
+            const text = item.textContent.toLowerCase();
+            const isVisible = text.includes(searchTerm.toLowerCase());
+            item.style.display = isVisible ? 'block' : 'none';
+        });
+    }
+
+    /**
+     * チャット履歴をクリア
+     */
+    async clearChatHistory() {
+        if (!confirm('すべてのチャット履歴を削除しますか？この操作は取り消せません。')) {
+            return;
+        }
+        
+        try {
+            await this.clearChatHistoryFromDB();
+            this.loadChatHistory();
+            this.showErrorToast('チャット履歴をクリアしました');
+        } catch (error) {
+            console.error('Error clearing chat history:', error);
+            this.showErrorToast('チャット履歴のクリアに失敗しました');
+        }
+    }
+
+    /**
+     * IndexedDBからチャット履歴を削除
+     */
+    clearChatHistoryFromDB() {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open('AIWifeMemory', 2); // バージョンを2に統一
+            
+            request.onerror = () => reject(request.error);
+            
+            request.onsuccess = () => {
+                const db = request.result;
+                
+                if (!db.objectStoreNames.contains('conversations')) {
+                    resolve();
+                    return;
+                }
+                
+                const transaction = db.transaction(['conversations'], 'readwrite');
+                const store = transaction.objectStore('conversations');
+                const clearRequest = store.clear();
+                
+                clearRequest.onsuccess = () => {
+                    console.log('Chat history cleared from IndexedDB');
+                    resolve();
+                };
+                clearRequest.onerror = () => reject(clearRequest.error);
+            };
+            
+            request.onupgradeneeded = (event) => {
+                const db = event.target.result;
+                
+                // 既存のストアを削除して再作成
+                if (db.objectStoreNames.contains('conversations')) {
+                    db.deleteObjectStore('conversations');
+                }
+                
+                // 新しいストアを作成
+                const store = db.createObjectStore('conversations', { keyPath: 'id', autoIncrement: true });
+                store.createIndex('timestamp', 'timestamp', { unique: false });
+                store.createIndex('personality', 'personality', { unique: false });
+                store.createIndex('sessionId', 'sessionId', { unique: false });
+                
+                console.log('IndexedDB schema updated for clearChatHistoryFromDB');
+            };
+        });
+    }
+
+    /**
+     * 会話にメッセージを追加してIndexedDBに保存
+     */
+    addMessageToConversation(role, text) {
+        if (!this.settings.memoryEnabled) {
+            return; // 記憶機能が無効の場合は保存しない
+        }
+
+        const message = {
+            role: role,
+            text: text,
+            timestamp: new Date().toISOString()
+        };
+
+        this.conversationMessages.push(message);
+        console.log('Added message to conversation:', message);
+
+        // 定期的に会話をIndexedDBに保存（5メッセージごと、または1分間隔）
+        this.scheduleConversationSave();
+    }
+
+    /**
+     * 会話保存のスケジューリング
+     */
+    scheduleConversationSave() {
+        if (this.saveTimeout) {
+            clearTimeout(this.saveTimeout);
+        }
+
+        // 1秒後に保存（連続する操作をバッチ処理）
+        this.saveTimeout = setTimeout(() => {
+            this.saveConversationToDB();
+        }, 1000);
+    }
+
+    /**
+     * 現在の会話をIndexedDBに保存
+     */
+    async saveConversationToDB() {
+        if (this.conversationMessages.length === 0) {
+            console.log('No messages to save');
+            return;
+        }
+
+        try {
+            const conversation = {
+                personality: this.settings.personality,
+                messages: [...this.conversationMessages],
+                timestamp: new Date().toISOString(),
+                sessionId: this.sessionId
+            };
+
+            console.log('Saving conversation to IndexedDB:', conversation);
+            await this.storeConversationInDB(conversation);
+            console.log('Conversation successfully saved to IndexedDB');
+        } catch (error) {
+            console.error('Failed to save conversation:', error);
+        }
+    }
+
+    /**
+     * 会話をIndexedDBに保存
+     */
+    storeConversationInDB(conversation) {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open('AIWifeMemory', 2); // バージョンを2に上げる
+            
+            request.onerror = () => reject(request.error);
+            
+            request.onsuccess = () => {
+                const db = request.result;
+                const transaction = db.transaction(['conversations'], 'readwrite');
+                const store = transaction.objectStore('conversations');
+                
+                // セッションIDで既存の会話を検索（インデックスを使わずに全件取得して検索）
+                const getAllRequest = store.getAll();
+                
+                getAllRequest.onsuccess = () => {
+                    const allConversations = getAllRequest.result;
+                    const existingConversation = allConversations.find(conv => 
+                        conv.sessionId === conversation.sessionId && 
+                        conv.personality === conversation.personality
+                    );
+                    
+                    if (existingConversation) {
+                        // 既存の会話を更新（同一セッション・同一キャラクターのみ）
+                        existingConversation.messages = conversation.messages;
+                        existingConversation.timestamp = conversation.timestamp;
+                        const updateRequest = store.put(existingConversation);
+                        updateRequest.onsuccess = () => {
+                            console.log('Conversation updated in IndexedDB');
+                            resolve(updateRequest.result);
+                        };
+                        updateRequest.onerror = () => reject(updateRequest.error);
+                    } else {
+                        // 新しい会話を追加
+                        const addRequest = store.add(conversation);
+                        addRequest.onsuccess = () => {
+                            console.log('New conversation added to IndexedDB');
+                            resolve(addRequest.result);
+                        };
+                        addRequest.onerror = () => reject(addRequest.error);
+                    }
+                };
+                
+                getAllRequest.onerror = () => reject(getAllRequest.error);
+            };
+            
+            request.onupgradeneeded = (event) => {
+                const db = event.target.result;
+                
+                // 既存のストアを削除して再作成
+                if (db.objectStoreNames.contains('conversations')) {
+                    db.deleteObjectStore('conversations');
+                }
+                
+                // 新しいストアを作成
+                const store = db.createObjectStore('conversations', { keyPath: 'id', autoIncrement: true });
+                store.createIndex('timestamp', 'timestamp', { unique: false });
+                store.createIndex('personality', 'personality', { unique: false });
+                store.createIndex('sessionId', 'sessionId', { unique: false });
+                
+                console.log('IndexedDB schema updated with sessionId index');
+            };
+        });
+    }
+
+    /**
+     * 新しい会話セッションを開始
+     */
+    startNewConversation() {
+        // 現在の会話を保存（まだ保存されていない場合）
+        if (this.conversationMessages.length > 0) {
+            this.saveConversationToDB();
+        }
+
+        // 新しいセッションを開始
+        this.sessionId = this.generateSessionId();
+        this.conversationMessages = [];
+        
+        // 保存タイムアウトをクリア
+        if (this.saveTimeout) {
+            clearTimeout(this.saveTimeout);
+            this.saveTimeout = null;
+        }
+        
+        console.log('Started new conversation session:', this.sessionId);
     }
     
     /**
@@ -1589,7 +3019,6 @@ class AIWifeApp {
             
             // UI要素に反映
             document.getElementById('characterSelect').value = this.settings.character;
-            document.getElementById('animationSelect').value = this.settings.animation;
             document.getElementById('backgroundSelect').value = this.settings.background;
             document.getElementById('volumeSlider').value = Math.round(this.settings.volume * 100);
             document.getElementById('volumeValue').textContent = Math.round(this.settings.volume * 100) + '%';
@@ -1598,6 +3027,200 @@ class AIWifeApp {
             document.getElementById('personalitySelect').value = this.settings.personality;
             document.getElementById('memoryToggle').checked = this.settings.memoryEnabled;
             document.getElementById('use3DUIToggle').checked = this.settings.use3DUI;
+        }
+    }
+    
+    /**
+     * キャラクターファイルアップロード処理
+     */
+    async handleCharacterUpload(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+        
+        // ファイル形式チェック
+        if (!file.name.toLowerCase().endsWith('.vrm')) {
+            this.showError('VRMファイルのみアップロード可能です。');
+            return;
+        }
+        
+        try {
+            const statusElement = document.getElementById('characterUploadStatus');
+            statusElement.textContent = 'アップロード中...';
+            statusElement.className = 'upload-status';
+            
+            // ファイルをmodelsフォルダに保存（実際の実装では、サーバーへのアップロード処理が必要）
+            const fileName = `custom_${Date.now()}_${file.name}`;
+            
+            // URL.createObjectURLを使用してローカルファイルを読み込み
+            const fileUrl = URL.createObjectURL(file);
+            
+            // キャラクター選択ドロップダウンにオプションを追加
+            const characterSelect = document.getElementById('characterSelect');
+            const option = document.createElement('option');
+            option.value = fileName;
+            option.textContent = `カスタム: ${file.name}`;
+            option.dataset.localUrl = fileUrl;
+            characterSelect.appendChild(option);
+            
+            // アップロードされたファイルを選択
+            characterSelect.value = fileName;
+            this.settings.character = fileName;
+            
+            // キャラクターを読み込み
+            await this.loadCustomCharacter(fileUrl);
+            
+            statusElement.textContent = `${file.name} をアップロードしました`;
+            statusElement.className = 'upload-status success';
+            
+        } catch (error) {
+            console.error('Character upload failed:', error);
+            const statusElement = document.getElementById('characterUploadStatus');
+            statusElement.textContent = 'アップロードに失敗しました';
+            statusElement.className = 'upload-status error';
+            this.showError('キャラクターファイルのアップロードに失敗しました。');
+        }
+    }
+    
+    /**
+     * 背景ファイルアップロード処理
+     */
+    async handleBackgroundUpload(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+        
+        // ファイル形式チェック
+        if (!file.type.startsWith('image/jpeg') && !file.type.startsWith('image/jpg')) {
+            this.showError('JPEGファイルのみアップロード可能です。');
+            return;
+        }
+        
+        try {
+            const statusElement = document.getElementById('backgroundUploadStatus');
+            statusElement.textContent = 'アップロード中...';
+            statusElement.className = 'upload-status';
+            
+            const fileName = `custom_${Date.now()}_${file.name}`;
+            const fileUrl = URL.createObjectURL(file);
+            
+            // 背景選択ドロップダウンにオプションを追加
+            const backgroundSelect = document.getElementById('backgroundSelect');
+            const option = document.createElement('option');
+            option.value = fileName;
+            option.textContent = `カスタム: ${file.name}`;
+            option.dataset.localUrl = fileUrl;
+            backgroundSelect.appendChild(option);
+            
+            // アップロードされたファイルを選択
+            backgroundSelect.value = fileName;
+            this.settings.background = fileName;
+            
+            // 背景を読み込み
+            await this.loadCustomBackground(fileUrl);
+            
+            statusElement.textContent = `${file.name} をアップロードしました`;
+            statusElement.className = 'upload-status success';
+            
+        } catch (error) {
+            console.error('Background upload failed:', error);
+            const statusElement = document.getElementById('backgroundUploadStatus');
+            statusElement.textContent = 'アップロードに失敗しました';
+            statusElement.className = 'upload-status error';
+            this.showError('背景ファイルのアップロードに失敗しました。');
+        }
+    }
+    
+    /**
+     * カスタムキャラクターの読み込み
+     */
+    async loadCustomCharacter(fileUrl) {
+        if (!this.scene) return;
+        
+        try {
+            this.showLoading();
+            
+            // 既存のキャラクターを削除
+            if (this.vrm) {
+                this.scene.remove(this.vrm.scene);
+                this.vrm = null;
+            }
+            
+            // GLTFローダーの設定
+            const loader = new GLTFLoader();
+            loader.register((parser) => new VRMLoaderPlugin(parser));
+            
+            // VRMファイルの読み込み
+            const gltfVrm = await loader.loadAsync(fileUrl);
+            this.vrm = gltfVrm.userData.vrm;
+            
+            // パフォーマンス最適化
+            VRMUtils.removeUnnecessaryVertices(this.vrm.scene);
+            VRMUtils.removeUnnecessaryJoints(this.vrm.scene);
+            
+            // フラスタムカリングを無効化
+            this.vrm.scene.traverse((obj) => {
+                if (obj.isMesh) {
+                    obj.frustumCulled = false;
+                }
+            });
+            
+            // LookAtクォータニオンプロキシを追加
+            const lookAtQuatProxy = new VRMLookAtQuaternionProxy(this.vrm.lookAt);
+            lookAtQuatProxy.name = 'lookAtQuaternionProxy';
+            this.vrm.scene.add(lookAtQuatProxy);
+            
+            // シーンに追加
+            this.scene.add(this.vrm.scene);
+            
+            // アニメーションミキサーを再作成
+            if (this.mixer) {
+                this.mixer.stopAllAction();
+            }
+            this.mixer = new THREE.AnimationMixer(this.vrm.scene);
+            
+            this.hideLoading();
+            console.log('Custom character loaded successfully');
+            
+        } catch (error) {
+            console.error('Failed to load custom character:', error);
+            this.hideLoading();
+            throw error;
+        }
+    }
+    
+    /**
+     * カスタム背景の読み込み
+     */
+    async loadCustomBackground(fileUrl) {
+        try {
+            if (!this.scene) return;
+            
+            // 既存の背景を削除
+            if (this.backgroundMesh) {
+                this.scene.remove(this.backgroundMesh);
+                this.backgroundMesh = null;
+            }
+            
+            // テクスチャの読み込み
+            const textureLoader = new THREE.TextureLoader();
+            const texture = await new Promise((resolve, reject) => {
+                textureLoader.load(fileUrl, resolve, undefined, reject);
+            });
+            
+            // 180度のスフィア背景を作成
+            const geometry = new THREE.SphereGeometry(50, 32, 16, Math.PI, Math.PI);
+            const material = new THREE.MeshBasicMaterial({
+                map: texture,
+                side: THREE.BackSide
+            });
+            
+            this.backgroundMesh = new THREE.Mesh(geometry, material);
+            this.scene.add(this.backgroundMesh);
+            
+            console.log('Custom background loaded successfully');
+            
+        } catch (error) {
+            console.error('Failed to load custom background:', error);
+            throw error;
         }
     }
     

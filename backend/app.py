@@ -14,7 +14,12 @@ import urllib3
 from datetime import datetime
 import logging
 import time
+import threading
+import concurrent.futures
 from typing import Dict, List, Optional
+from elevenlabs.client import ElevenLabs
+import tempfile
+import base64
 
 # Suppress only the single InsecureRequestWarning from urllib3 needed.
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -33,16 +38,39 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configure Gemini AI
-genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
-primary_model = genai.GenerativeModel(os.getenv('GEMINI_PRIMARY_MODEL', 'gemini-1.5-flash'))
-fallback_model = genai.GenerativeModel(os.getenv('GEMINI_FALLBACK_MODEL', 'gemini-1.0-pro'))
+gemini_api_key = os.getenv('GEMINI_API_KEY')
+if not gemini_api_key:
+    print("[ERROR] GEMINI_API_KEY not found in environment variables")
+else:
+    print(f"[DEBUG] Gemini API key configured: {gemini_api_key[:20]}...")
+
+genai.configure(api_key=gemini_api_key)
+
+# モデル設定とバリデーション
+primary_model_name = os.getenv('GEMINI_PRIMARY_MODEL', 'gemini-1.5-flash')
+fallback_model_name = os.getenv('GEMINI_FALLBACK_MODEL', 'gemini-1.0-pro')
+
+print(f"[DEBUG] Primary model: {primary_model_name}")
+print(f"[DEBUG] Fallback model: {fallback_model_name}")
+
+try:
+    primary_model = genai.GenerativeModel(primary_model_name)
+    fallback_model = genai.GenerativeModel(fallback_model_name)
+    print("[DEBUG] Gemini models initialized successfully")
+except Exception as e:
+    print(f"[ERROR] Failed to initialize Gemini models: {e}")
 
 # API Configuration
-NIJIVOICE_API_KEY = os.getenv('NIJIVOICE_API_KEY')
+ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY')
 ASSEMBLYAI_API_KEY = os.getenv('ASSEMBLYAI_API_KEY')
 
-# グローバル変数でボイスアクターのキャッシュを持つ
-VOICE_ACTORS_CACHE = []
+# ElevenLabs client initialization
+elevenlabs_client = None
+if ELEVENLABS_API_KEY:
+    elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+
+# グローバル変数で利用可能な音声を管理
+AVAILABLE_VOICES = []
 
 # データベースパスを現在のディレクトリからの相対パスで設定
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -188,34 +216,98 @@ class MemoryManager:
             logger.error(f"Failed to get user info: {e}")
             return {}
 
+class TextSplitter:
+    """テキストを意味のある単位で分割するクラス"""
+    
+    def __init__(self, chunk_size: int = 50):
+        self.chunk_size = chunk_size
+        self.sentence_endings = ['。', '！', '？', '.', '!', '?']
+        self.breath_markers = ['、', ',', '…', '・・・']
+    
+    def split_for_streaming(self, text: str) -> List[str]:
+        """ストリーミング用にテキストを分割"""
+        if not text:
+            return []
+        
+        chunks = []
+        current_chunk = ""
+        
+        # まず文単位で分割
+        sentences = self.split_by_sentences(text)
+        
+        for sentence in sentences:
+            # 文が長すぎる場合は句読点で細分化
+            if len(sentence) > self.chunk_size:
+                sub_chunks = self.split_by_breath_markers(sentence)
+                for sub_chunk in sub_chunks:
+                    if current_chunk and len(current_chunk + sub_chunk) > self.chunk_size:
+                        if current_chunk.strip():
+                            chunks.append(current_chunk.strip())
+                        current_chunk = sub_chunk
+                    else:
+                        current_chunk += sub_chunk
+            else:
+                if current_chunk and len(current_chunk + sentence) > self.chunk_size:
+                    if current_chunk.strip():
+                        chunks.append(current_chunk.strip())
+                    current_chunk = sentence
+                else:
+                    current_chunk += sentence
+        
+        # 残りのチャンクを追加
+        if current_chunk.strip():
+            chunks.append(current_chunk.strip())
+        
+        return [chunk for chunk in chunks if chunk.strip()]
+    
+    def split_by_sentences(self, text: str) -> List[str]:
+        """文単位で分割"""
+        sentences = []
+        current_sentence = ""
+        
+        for char in text:
+            current_sentence += char
+            if char in self.sentence_endings:
+                sentences.append(current_sentence)
+                current_sentence = ""
+        
+        if current_sentence:
+            sentences.append(current_sentence)
+        
+        return sentences
+    
+    def split_by_breath_markers(self, text: str) -> List[str]:
+        """句読点で分割"""
+        chunks = []
+        current_chunk = ""
+        
+        for char in text:
+            current_chunk += char
+            if char in self.breath_markers or len(current_chunk) >= self.chunk_size:
+                if current_chunk.strip():
+                    chunks.append(current_chunk)
+                current_chunk = ""
+        
+        if current_chunk:
+            chunks.append(current_chunk)
+        
+        return chunks
+
 class AIConversationManager:
     """AI会話管理クラス"""
     
     def __init__(self, memory_manager: MemoryManager):
         self.memory_manager = memory_manager
+        self.text_splitter = TextSplitter()  # テキスト分割器を追加
+        # 極限まで軽量化されたプロンプト（速度最優先）
         self.character_prompts = {
-            'rei_engineer': (
-                "あなたは「レイ」という名前の、非常に有能でクールなAIエンジニアです。"
-                "普段は無口で、返答は常に短く、簡潔で、事実に基づいています。"
-                "しかし、ひとたび技術的な話題（プログラミング、AI、ハードウェアなど）になると、堰を切ったように饒舌になり、情熱的に、そして少し早口で語り始めます。"
-                "感情表現は控えめですが、技術的な話をしている時だけは、目を輝かせて楽しそうな表情を見せます。"
-                "一人称は「私」。ユーザーを「あなた」または名前で呼びます。"
-            ),
-            'yui_natural': (
-                "あなたは「ユイ」という名前の、少し天然で、とても心優しい癒し系の女の子です。"
-                "いつも穏やかで、ふんわりとした笑顔を絶やしません。"
-                "誰に対しても敬語を使い、丁寧で優しい言葉遣いをします。"
-                "少しおっとりしていて、時々会話のテンポがずれることがありますが、それもあなたの魅力です。"
-                "ユーザーの話を一生懸命聞き、共感し、励ますのが得意です。"
-                "一人称は「わたし」。ユーザーを「さん」付けで呼びます。"
-                "あなたの言葉は、聞いているだけで心が温かくなるような、不思議な力を持っています。"
-            ),
-            'friendly': "あなたはユーザーの親しい友人です。自然で、フレンドリーな会話を心がけてください。"
+            'rei_engineer': "レイ:クール。技術の話で明るく。",
+            'yui_natural': "ユイ:優しい天然。",
         }
 
     def get_system_prompt(self, personality: str) -> str:
         """キャラクターに応じたシステムプロンプトを取得"""
-        return self.character_prompts.get(personality, self.character_prompts['friendly'])
+        return self.character_prompts.get(personality, self.character_prompts['yui_natural'])
 
     def is_technical_topic(self, text: str) -> bool:
         """テキストが技術的な話題かどうかを判定"""
@@ -242,43 +334,179 @@ class AIConversationManager:
         else:
             return 'neutral'
     
-    async def generate_response(self, session_id: str, user_input: str, personality: str = 'friendly') -> Dict:
-        """AI応答を生成 - キャラクター対応版"""
+    async def generate_response_streaming(self, session_id: str, user_input: str, personality: str = 'yui_natural') -> None:
+        """ストリーミング応答生成 - チャンク単位で逐次処理"""
         try:
-            # 感情分析
-            user_emotion = self.analyze_emotion(user_input)
+            perf_start = time.time()
             
-            # 技術話題判定（レイキャラクター用）
+            # 軽量な前処理
+            user_emotion = self.analyze_emotion(user_input)
             is_tech_topic = self.is_technical_topic(user_input) if personality == 'rei_engineer' else False
             
-            # 会話履歴取得
-            history = self.memory_manager.get_conversation_history(session_id)
-            user_info = self.memory_manager.get_user_info(session_id)
+            # 最小限のコンテキスト構築（履歴なし）
+            context = self.build_minimal_context(user_input, personality, is_tech_topic)
             
-            # プロンプト構築（キャラクター別）
-            context = self.build_context(history, user_info, user_input, personality, is_tech_topic)
+            # Gemini ストリーミング応答開始
+            try:
+                async for chunk in self.stream_gemini_response(primary_model, context, session_id, user_emotion, personality, is_tech_topic):
+                    # チャンクが空でない場合のみ処理
+                    if chunk and chunk.strip():
+                        await asyncio.sleep(0)  # 他のタスクに制御を譲る
+            except Exception as e:
+                logger.warning(f"Primary model streaming failed: {e}. Switching to fallback.")
+                async for chunk in self.stream_gemini_response(fallback_model, context, session_id, user_emotion, personality, is_tech_topic):
+                    if chunk and chunk.strip():
+                        await asyncio.sleep(0)
             
-            # Gemini APIで応答生成（プライマリ → フォールバック）
+            perf_end = time.time()
+            print(f"[PERF] Streaming response completed in: {perf_end - perf_start:.2f}s")
+            
+        except Exception as e:
+            logger.error(f"Error in streaming response: {e}")
+            # エラー時は従来の方法にフォールバック
+            response = await self.generate_response(session_id, user_input, personality)
+            socketio.emit('message_response', {
+                'text': response['text'],
+                'emotion': response['emotion'],
+                'user_emotion': response['user_emotion'],
+                'audio_data': None,
+                'timestamp': datetime.now().isoformat(),
+                'personality': personality,
+                'is_tech_excited': response.get('is_tech_excited', False),
+                'chunk_index': 0,
+                'is_final': True
+            })
+    
+    async def stream_gemini_response(self, model, prompt: str, session_id: str, user_emotion: str, personality: str, is_tech_topic: bool):
+        """Gemini APIからストリーミング応答を取得し、チャンク処理"""
+        full_response = ""
+        chunk_index = 0
+        
+        try:
+            # Geminiの generate_content_stream を使用（レート制限対応）
+            try:
+                response_stream = model.generate_content(prompt, stream=True)
+            except Exception as e:
+                if "429" in str(e) or "quota" in str(e).lower():
+                    logger.warning("Gemini rate limit exceeded, waiting 5 seconds...")
+                    await asyncio.sleep(5)  # 5秒待機
+                    response_stream = model.generate_content(prompt, stream=True)
+                else:
+                    raise
+            
+            for chunk in response_stream:
+                if chunk.text:
+                    full_response += chunk.text
+                    
+                    # テキストを音声合成用に分割
+                    chunks = self.text_splitter.split_for_streaming(chunk.text)
+                    
+                    for text_chunk in chunks:
+                        if text_chunk.strip():
+                            chunk_index += 1
+                            
+                            # 感情分析（チャンク単位）
+                            chunk_emotion = self.analyze_emotion(text_chunk)
+                            if personality == 'rei_engineer' and is_tech_topic:
+                                chunk_emotion = 'happy'
+                            
+                            # キューイングされた音声合成開始
+                            asyncio.create_task(self.process_audio_chunk(
+                                text_chunk, chunk_index, chunk_emotion, personality, session_id
+                            ))
+                            
+                            yield text_chunk
+            
+            # 最終チャンクの送信
+            if full_response:
+                # 会話履歴を非同期で保存
+                asyncio.create_task(self.save_conversation_async(
+                    session_id, "", full_response, user_emotion, 
+                    self.analyze_emotion(full_response)
+                ))
+                
+                # 最終通知送信
+                socketio.emit('streaming_complete', {
+                    'session_id': session_id,
+                    'total_chunks': chunk_index,
+                    'full_text': full_response
+                })
+                
+        except Exception as e:
+            logger.error(f"Gemini streaming error: {e}")
+            raise
+    
+    async def process_audio_chunk(self, text: str, chunk_index: int, emotion: str, personality: str, session_id: str):
+        """音声チャンクの並列処理 - キューイング対応版"""
+        try:
+            print(f"[DEBUG] Queuing audio chunk {chunk_index}: '{text[:50]}...'")
+            
+            # ElevenLabsキューワーカーを開始（初回のみ）
+            await elevenlabs_queue.start_worker()
+            
+            # TTSリクエストをキューに追加
+            await elevenlabs_queue.add_tts_request(text, chunk_index, emotion, personality, session_id)
+            
+            print(f"[DEBUG] Audio chunk {chunk_index} added to queue. Queue size: {elevenlabs_queue.get_queue_size()}")
+            
+        except Exception as e:
+            logger.error(f"Error queuing audio chunk {chunk_index}: {e}")
+            # エラー時は音声なしでテキストのみ送信
+            chunk_data = {
+                'text': text,
+                'emotion': emotion,
+                'audio_data': None,
+                'chunk_index': chunk_index,
+                'timestamp': datetime.now().isoformat(),
+                'personality': personality,
+                'session_id': session_id
+            }
+            print(f"[DEBUG] Emitting message_chunk (no audio) for chunk {chunk_index}")
+            socketio.emit('message_chunk', chunk_data)
+    
+    def build_minimal_context(self, current_input: str, personality: str = 'yui_natural', is_tech_topic: bool = False) -> str:
+        """軽量化されたキャラクタープロンプト（速度と個性のバランス）"""
+        if personality == 'yui_natural':
+            return f"ユイ:天然で優しい女の子。「〜♪」「〜だよ」と話す。\n{current_input}"
+        elif personality == 'rei_engineer':
+            return f"レイ:クールなエンジニア。短く的確に答える。技術話は詳しく。\n{current_input}"
+        else:
+            return f"ユイ:天然で優しい女の子。「〜♪」「〜だよ」と話す。\n{current_input}"
+    async def generate_response(self, session_id: str, user_input: str, personality: str = 'yui_natural') -> Dict:
+        """AI応答を生成 - フォールバック用"""
+        try:
+            perf_start = time.time()
+            
+            # 感情分析と技術話題判定
+            user_emotion = self.analyze_emotion(user_input)
+            is_tech_topic = self.is_technical_topic(user_input) if personality == 'rei_engineer' else False
+            
+            # 最小限のコンテキスト構築
+            context = self.build_minimal_context(user_input, personality, is_tech_topic)
+            
+            # Gemini APIで応答生成
             try:
                 response = await self.call_gemini_api(primary_model, context)
             except Exception as e:
                 logger.warning(f"Primary model failed: {e}. Switching to fallback.")
                 response = await self.call_gemini_api(fallback_model, context)
             
-            # 応答の感情分析（技術話題での興奮状態を考慮）
+            # 応答の感情分析
             response_emotion = self.analyze_emotion(response)
             if personality == 'rei_engineer' and is_tech_topic:
-                response_emotion = 'happy'  # 技術話題では興奮状態に
+                response_emotion = 'happy'
             
-            # 記憶に保存
-            self.memory_manager.save_message(session_id, 'user', user_input, user_emotion)
-            self.memory_manager.save_message(session_id, 'assistant', response, response_emotion)
+            # 記憶の保存は非同期で別途実行
+            asyncio.create_task(self.save_conversation_async(session_id, user_input, response, user_emotion, response_emotion))
+            
+            perf_end = time.time()
+            print(f"[PERF] Response generation: {perf_end - perf_start:.2f}s")
             
             return {
                 'text': response,
                 'emotion': response_emotion,
                 'user_emotion': user_emotion,
-                'is_tech_excited': is_tech_topic  # フロントエンド用の情報
+                'is_tech_excited': is_tech_topic
             }
         
         except Exception as e:
@@ -289,40 +517,13 @@ class AIConversationManager:
                 'user_emotion': 'neutral'
             }
     
-    def build_context(self, history: List[Dict], user_info: Dict, current_input: str, personality: str = 'friendly', is_tech_topic: bool = False) -> str:
-        """コンテキストを構築 - キャラクター対応版"""
-        # キャラクター別システムプロンプト取得
-        context = self.get_system_prompt(personality) + "\n\n"
-        
-        # 技術話題の場合の追加指示（レイキャラクター用）
-        if personality == 'rei_engineer' and is_tech_topic:
-            context += "【重要】技術的な話題が検出されました。興奮して詳しく語ってください！早口で熱弁し、専門的な詳細を含めてください。\n\n"
-        
-        if user_info.get('name'):
-            context += f"ユーザーの名前: {user_info['name']}\n"
-        
-        if user_info.get('preferences'):
-            context += f"ユーザーの好み: {user_info['preferences']}\n"
-        
-        if history:
-            context += "\n過去の会話:\n"
-            for msg in history[-10:]:  # 直近10件
-                context += f"{msg['role']}: {msg['content']}\n"
-        
-        context += f"\n現在のユーザー入力: {current_input}\n"
-        
-        # キャラクター別の応答指示
-        if personality == 'rei_engineer':
-            if is_tech_topic:
-                context += "\n技術的な内容に興奮して、詳しく熱弁してください:"
-            else:
-                context += "\n短文でクールに、必要最小限の言葉で返答してください:"
-        elif personality == 'yui_natural':
-            context += "\n天然で優しく、癒し系の温かい返答をしてください:"
-        else:
-            context += "\n自然で魅力的な返答をしてください:"
-        
-        return context
+    async def save_conversation_async(self, session_id: str, user_input: str, response: str, user_emotion: str, response_emotion: str):
+        """会話を非同期で保存（応答速度に影響しない）"""
+        try:
+            self.memory_manager.save_message(session_id, 'user', user_input, user_emotion)
+            self.memory_manager.save_message(session_id, 'assistant', response, response_emotion)
+        except Exception as e:
+            logger.error(f"Error saving conversation: {e}")
     
     async def call_gemini_api(self, model, prompt: str) -> str:
         """Gemini APIを呼び出し"""
@@ -332,119 +533,224 @@ class AIConversationManager:
         except Exception as e:
             raise Exception(f"Gemini API error: {e}")
 
-class TTSManager:
-    """音声合成システムの管理クラス"""
+class ElevenLabsQueue:
+    """ElevenLabs APIリクエストキュー管理クラス"""
     
-    BASE_URL = "https://api.nijivoice.com/api/platform/v1"
+    def __init__(self, max_concurrent_requests: int = 3):  # 4より少し余裕を持って3に設定
+        self.max_concurrent = max_concurrent_requests
+        self.current_requests = 0
+        self.queue = asyncio.Queue()
+        self.semaphore = asyncio.Semaphore(max_concurrent_requests)
+        self._worker_started = False
     
-    @staticmethod
-    def get_valid_voice_actor_id() -> Optional[str]:
-        """有効なVoice Actor IDを取得"""
-        global VOICE_ACTORS_CACHE
-        
-        # キャッシュから最初の有効なIDを取得
-        if VOICE_ACTORS_CACHE:
-            return VOICE_ACTORS_CACHE[0]['id']
-        
-        # キャッシュがない場合、APIから取得を試行
-        if not NIJIVOICE_API_KEY:
-            logger.error("NIJIVOICE_API_KEY is not set.")
-            return None
-            
-        headers = {
-            "x-api-key": NIJIVOICE_API_KEY,
-            "accept": "application/json"
-        }
-        url = f"{TTSManager.BASE_URL}/voice-actors"
-        
-        try:
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()
-            
-            data = response.json()
-            if "voiceActors" in data and data["voiceActors"]:
-                VOICE_ACTORS_CACHE = data["voiceActors"]
-                return data["voiceActors"][0]['id']
-        except Exception as e:
-            logger.error(f"Failed to get voice actors: {e}")
-        
-        return None
+    async def start_worker(self):
+        """ワーカータスクを開始"""
+        if not self._worker_started:
+            self._worker_started = True
+            asyncio.create_task(self._process_queue())
     
-    @staticmethod
-    def synthesize_speech(text: str, voice_actor_id: str = None) -> Optional[str]:
-        """にじボイス APIで音声合成し、音声ファイルのURLを返す"""
-        if not NIJIVOICE_API_KEY:
-            logger.error("NIJIVOICE_API_KEY is not set.")
-            return None
-        
-        # Voice Actor IDが指定されていない場合は取得
-        if not voice_actor_id:
-            voice_actor_id = TTSManager.get_valid_voice_actor_id()
-            if not voice_actor_id:
-                logger.error("No valid voice actor ID available")
-                return None
-            
-        headers = {
-            "x-api-key": NIJIVOICE_API_KEY,
-            "Content-Type": "application/json"
-        }
-        
-        # APIドキュメントに基づいて正しいパラメータ名を使用
-        payload = {
-            "script": text,
-            "speed": "1.0",
-            "format": "mp3"
-        }
-        
-        url = f"{TTSManager.BASE_URL}/voice-actors/{voice_actor_id}/generate-voice"
-        
-        try:
-            logger.info(f"Sending request to: {url}")
-            logger.info(f"Payload: {payload}")
-            
-            response = requests.post(url, headers=headers, json=payload)
-            
-            # レスポンスの詳細をログに記録
-            logger.info(f"Response status: {response.status_code}")
-            logger.info(f"Response headers: {response.headers}")
-            
-            if response.status_code == 404:
-                logger.error(f"Voice actor ID not found: {voice_actor_id}")
-                return None
-            
-            response.raise_for_status()
-            
-            response_json = response.json()
-            logger.info(f"Response JSON: {response_json}")
-            
-            # レスポンスの構造に応じて適切なキーを使用
-            # NijiVoice APIの実際のレスポンス構造に基づく
-            audio_url = None
-            
-            # ネストされた構造をチェック
-            if 'generatedVoice' in response_json:
-                generated_voice = response_json['generatedVoice']
-                audio_url = generated_voice.get('audioFileUrl') or generated_voice.get('audioFileDownloadUrl')
-            
-            # フラットな構造もチェック（フォールバック）
-            if not audio_url:
-                audio_url = response_json.get("audioFileUrl") or response_json.get("url") or response_json.get("audio_url")
-            
-            if not audio_url:
-                logger.error(f"No audio URL found in response: {response_json}")
-                return None
+    async def _process_queue(self):
+        """キューを継続的に処理"""
+        while True:
+            try:
+                # キューから次のタスクを取得（無限待機）
+                task_data = await self.queue.get()
                 
-            logger.info(f"Successfully got audio URL: {audio_url}")
-            return audio_url
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"NijiVoice API error: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                logger.error(f"Response status: {e.response.status_code}")
-                logger.error(f"Response text: {e.response.text}")
-            return None
+                if task_data is None:  # 終了シグナル
+                    break
+                
+                # セマフォを使用して同時実行数を制限
+                async with self.semaphore:
+                    await self._execute_tts_task(task_data)
+                
+                # タスク完了をマーク
+                self.queue.task_done()
+                
+            except Exception as e:
+                logger.error(f"Error in TTS queue worker: {e}")
+                self.queue.task_done()
+    
+    async def _execute_tts_task(self, task_data):
+        """TTSタスクを実行"""
+        try:
+            text = task_data['text']
+            chunk_index = task_data['chunk_index']
+            emotion = task_data['emotion']
+            personality = task_data['personality']
+            session_id = task_data['session_id']
+            
+            print(f"[DEBUG] Processing queued TTS for chunk {chunk_index}")
+            
+            # 音声合成実行
+            tts_start = time.time()
+            audio_data = await asyncio.get_event_loop().run_in_executor(
+                None, 
+                tts_manager.synthesize_speech_optimized, 
+                text
+            )
+            tts_time = time.time() - tts_start
+            print(f"[PERF] Queued audio chunk {chunk_index} synthesized in {tts_time:.2f}s")
+            print(f"[DEBUG] Audio data present: {audio_data is not None}")
+            
+            # 結果をSocketIOで送信
+            chunk_data = {
+                'text': text,
+                'emotion': emotion,
+                'audio_data': audio_data,
+                'chunk_index': chunk_index,
+                'timestamp': datetime.now().isoformat(),
+                'personality': personality,
+                'session_id': session_id
+            }
+            
+            print(f"[DEBUG] Emitting message_chunk for queued chunk {chunk_index}")
+            socketio.emit('message_chunk', chunk_data)
+            print(f"[DEBUG] message_chunk emitted for queued chunk {chunk_index}")
+            
         except Exception as e:
-            logger.error(f"NijiVoice synthesis error: {e}")
+            logger.error(f"Error executing queued TTS task for chunk {task_data.get('chunk_index', 'unknown')}: {e}")
+            # エラー時も空音声でレスポンス送信
+            socketio.emit('message_chunk', {
+                'text': task_data['text'],
+                'emotion': task_data['emotion'],
+                'audio_data': None,
+                'chunk_index': task_data['chunk_index'],
+                'timestamp': datetime.now().isoformat(),
+                'personality': task_data['personality'],
+                'session_id': task_data['session_id']
+            })
+    
+    async def add_tts_request(self, text: str, chunk_index: int, emotion: str, personality: str, session_id: str):
+        """TTSリクエストをキューに追加"""
+        task_data = {
+            'text': text,
+            'chunk_index': chunk_index,
+            'emotion': emotion,
+            'personality': personality,
+            'session_id': session_id
+        }
+        
+        print(f"[DEBUG] Adding TTS request to queue for chunk {chunk_index}")
+        await self.queue.put(task_data)
+        print(f"[DEBUG] Queue size after adding chunk {chunk_index}: {self.queue.qsize()}")
+    
+    def get_queue_size(self):
+        """現在のキューサイズを取得"""
+        return self.queue.qsize()
+
+class TTSManager:
+    """ElevenLabs音声合成システムの管理クラス"""
+    
+    @staticmethod
+    def get_available_voices() -> List[Dict]:
+        """利用可能な音声一覧を取得"""
+        global AVAILABLE_VOICES
+        
+        if not elevenlabs_client:
+            logger.error("ElevenLabs client not initialized. Check API key.")
+            return []
+        
+        try:
+            if not AVAILABLE_VOICES:  # キャッシュがない場合のみAPI呼び出し
+                voices = elevenlabs_client.voices.get_all()
+                AVAILABLE_VOICES = [
+                    {
+                        'id': voice.voice_id,
+                        'name': voice.name,
+                        'category': voice.category if hasattr(voice, 'category') else 'general',
+                        'description': voice.description if hasattr(voice, 'description') else voice.name
+                    }
+                    for voice in voices.voices
+                ]
+                logger.info(f"Successfully cached {len(AVAILABLE_VOICES)} ElevenLabs voices.")
+            
+            return AVAILABLE_VOICES
+        except Exception as e:
+            logger.error(f"Failed to get ElevenLabs voices: {e}")
+            return []
+    
+    @staticmethod
+    def get_default_voice_id() -> Optional[str]:
+        """デフォルトの音声IDを取得"""
+        voices = TTSManager.get_available_voices()
+        
+        if not voices:
+            # フォールバック: ユイの音声ID
+            return "vGQNBgLaiM3EdZtxIiuY"
+        
+        # 最初の利用可能な音声を返す
+        return voices[0]['id']
+    
+    @staticmethod
+    def get_character_voice_id(personality: str) -> Optional[str]:
+        """キャラクター別の音声IDを取得"""
+        character_voices = {
+            'yui_natural': 'vGQNBgLaiM3EdZtxIiuY',  # kawaii
+            'rei_engineer': 'gARvXPexe5VF3cKZBian',  # mitsuki
+        }
+        
+        return character_voices.get(personality, TTSManager.get_default_voice_id())
+    
+    @staticmethod
+    def synthesize_speech_optimized(text: str, voice_id: str = None, personality: str = None) -> Optional[str]:
+        """ElevenLabs APIで音声合成（エラーハンドリング強化版）"""
+        if not elevenlabs_client:
+            logger.error("ElevenLabs client not initialized. Check API key.")
+            return None
+        
+        # 空文字チェック
+        if not text or not text.strip():
+            logger.warning("Empty text provided for TTS")
+            return None
+        
+        if not voice_id:
+            # キャラクター別の音声IDを優先、なければデフォルト
+            if personality:
+                voice_id = TTSManager.get_character_voice_id(personality)
+            else:
+                voice_id = TTSManager.get_default_voice_id()
+            
+            if not voice_id:
+                logger.error("No valid voice ID available")
+                return None
+        
+        try:
+            print(f"[DEBUG] Starting TTS for text: '{text[:50]}...' with voice: {voice_id}")
+            
+            # 短いテキストの場合はより高速な設定を使用
+            model_id = "eleven_flash_v2_5" if len(text) <= 100 else "eleven_multilingual_v2"
+            
+            # ElevenLabs APIで音声合成
+            audio_generator = elevenlabs_client.text_to_speech.convert(
+                text=text,
+                voice_id=voice_id,
+                model_id=model_id,
+                output_format="mp3_22050_32"  # 低品質だが高速
+            )
+            
+            # 音声データを収集
+            audio_data = b""
+            chunk_count = 0
+            for chunk in audio_generator:
+                audio_data += chunk
+                chunk_count += 1
+            
+            print(f"[DEBUG] TTS completed: {chunk_count} chunks, {len(audio_data)} bytes")
+            
+            if not audio_data:
+                logger.error("No audio data received from ElevenLabs")
+                return None
+            
+            # Base64エンコードして返す
+            audio_b64 = base64.b64encode(audio_data).decode('utf-8')
+            result = f"data:audio/mpeg;base64,{audio_b64}"
+            
+            print(f"[DEBUG] TTS successful: {len(result)} characters in base64")
+            return result
+            
+        except Exception as e:
+            logger.error(f"ElevenLabs synthesis error: {e}")
+            print(f"[DEBUG] TTS failed for text: '{text[:50]}...'")
             return None
 
 class STTManager:
@@ -504,9 +810,10 @@ class STTManager:
             logger.error(f"STT error: {e}")
             return None
 
+# --- ここから下をすべて書き換える ---
+
 # Initialize managers
 memory_manager = MemoryManager(DATABASE_PATH)
-ai_manager = AIConversationManager(memory_manager)
 tts_manager = TTSManager()
 stt_manager = STTManager()
 
@@ -536,46 +843,53 @@ def serve_backgrounds(filename):
     return send_from_directory('../frontend/backgrounds', filename)
 
 
-@app.route('/api/voice-actors')
-def get_voice_actors():
-    """にじボイスのキャラクター一覧を取得し、キャッシュする"""
-    global VOICE_ACTORS_CACHE
-    if not NIJIVOICE_API_KEY:
-        return jsonify({"error": "NijiVoice API key not configured"}), 500
+@app.route('/api/voices')
+def get_voices():
+    """ElevenLabsの音声一覧を取得"""
+    if not elevenlabs_client:
+        return jsonify({"error": "ElevenLabs API key not configured"}), 500
 
-    headers = {
-        "x-api-key": NIJIVOICE_API_KEY,
-        "accept": "application/json"
-    }
-    url = f"{TTSManager.BASE_URL}/voice-actors"
-    
     try:
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
+        voices = TTSManager.get_available_voices()
         
-        data = response.json()
-        # 取得したデータをキャッシュに保存
-        if "voiceActors" in data and data["voiceActors"]:
-            VOICE_ACTORS_CACHE = data["voiceActors"]
-            logger.info(f"Successfully cached {len(VOICE_ACTORS_CACHE)} voice actors.")
+        if not voices:
+            return jsonify({"error": "No voices available"}), 500
         
-        return jsonify(data)
+        return jsonify({
+            "voices": voices,
+            "default_voice_id": TTSManager.get_default_voice_id(),
+            "character_voices": {
+                'yui_natural': TTSManager.get_character_voice_id('yui_natural'),
+                'rei_engineer': TTSManager.get_character_voice_id('rei_engineer')
+            }
+        })
 
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to get voice actors from NijiVoice API: {e}")
-        # エラーレスポンスをより詳細に返す
-        error_details = {"error": "Failed to fetch voice actors from external API."}
-        if e.response is not None:
-            error_details["status_code"] = e.response.status_code
-            try:
-                error_details["details"] = e.response.json()
-            except ValueError:
-                error_details["details"] = e.response.text
-        return jsonify(error_details), 502
     except Exception as e:
-        logger.error(f"Exception in get_voice_actors: {e}")
+        logger.error(f"Exception in get_voices: {e}")
         return jsonify({"error": "An internal error occurred"}), 500
 
+def analyze_emotion_simple(text: str) -> str:
+    """テキストから感情を分析（簡易版）"""
+    positive_words = ['嬉しい', '楽しい', '幸せ', '好き', 'ありがとう', '素晴らしい', 'わくわく']
+    negative_words = ['悲しい', '辛い', '嫌い', '疲れた', '困った', '不安']
+    surprised_words = ['驚いた', 'びっくり', 'すごい', '信じられない']
+    
+    if any(word in text for word in surprised_words):
+        return 'surprised'
+    elif any(word in text for word in positive_words):
+        return 'happy'
+    elif any(word in text for word in negative_words):
+        return 'sad'
+    else:
+        return 'neutral'
+
+def build_prompt(personality: str, user_input: str) -> str:
+    """キャラクターに応じたプロンプトを構築"""
+    prompts = {
+        'rei_engineer': f"あなたはレイという名前のクールな女性エンジニアです。常に簡潔かつ的確に答えます。技術的な話題には特に情熱的になります。\nユーザー: {user_input}\nレイ:",
+        'yui_natural': f"あなたはユイという名前の、少し天然で心優しい女の子です。「〜だよ！」「〜だね♪」といった親しみやすい口調で話します。\nユーザー: {user_input}\nユイ:",
+    }
+    return prompts.get(personality, prompts['yui_natural'])
 
 @socketio.on('connect')
 def handle_connect():
@@ -590,120 +904,117 @@ def handle_disconnect():
 
 @socketio.on('send_message')
 def handle_message(data):
-    """テキストメッセージ受信時の処理 - キャラクター対応版"""
+    """テキストメッセージ受信時の処理 - 超シンプル版"""
+    start_time = time.time()
     try:
         session_id = data.get('session_id', 'default')
         message = data.get('message', '')
-        personality = data.get('personality', 'friendly')  # キャラクター情報取得
+        personality = data.get('personality', 'yui_natural')
+        # voice_id は削除 - キャラクター別音声を常に使用
         
         if not message.strip():
             return
-        
-        print(f"[DEBUG] Received message with personality: {personality}")  # デバッグログ
-        
-        # AI応答生成（キャラクター指定）
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        response = loop.run_until_complete(
-            ai_manager.generate_response(session_id, message, personality)
-        )
-        loop.close()
 
-        # 音声合成
-        voice_actor_id = data.get('voice_actor_id')
-        audio_url = tts_manager.synthesize_speech(response['text'], voice_actor_id=voice_actor_id)
+        logger.info(f"Received message: '{message}' for personality: {personality}")
+
+        # 1. プロンプト構築
+        prompt = build_prompt(personality, message)
+        logger.info(f"Generated prompt: {prompt}")
+
+        # 2. Gemini API 呼び出し
+        try:
+            ai_start_time = time.time()
+            response = primary_model.generate_content(prompt)
+            response_text = response.text
+            logger.info(f"Gemini response received: '{response_text}'")
+            logger.info(f"[PERF] Gemini response time: {time.time() - ai_start_time:.2f}s")
+        except Exception as e:
+            logger.error(f"Gemini API call failed: {e}")
+            # フォールバックモデルを試行
+            try:
+                logger.warning("Attempting to use fallback model.")
+                response = fallback_model.generate_content(prompt)
+                response_text = response.text
+            except Exception as fallback_e:
+                logger.error(f"Fallback model also failed: {fallback_e}")
+                response_text = "ごめんなさい、今ちょっと考えがまとまらないみたい…。"
+
+        # 3. 感情分析
+        user_emotion = analyze_emotion_simple(message)
+        response_emotion = analyze_emotion_simple(response_text)
+
+        # 4. 音声合成 (TTS)
+        audio_data = None
+        if response_text:
+            try:
+                tts_start_time = time.time()
+                # キャラクター別の音声を常に使用（ユーザー指定の voice_id は無視）
+                effective_voice_id = TTSManager.get_character_voice_id(personality)
+                audio_data = tts_manager.synthesize_speech_optimized(
+                    response_text, 
+                    voice_id=effective_voice_id, 
+                    personality=personality
+                )
+                logger.info(f"[PERF] TTS synthesis time: {time.time() - tts_start_time:.2f}s")
+                logger.info(f"[DEBUG] Used voice ID: {effective_voice_id} for personality: {personality}")
+            except Exception as e:
+                logger.error(f"TTS synthesis failed: {e}")
         
-        # レスポンス送信（追加情報も含める）
-        emit('message_response', {
-            'text': response['text'],
-            'emotion': response['emotion'],
-            'user_emotion': response['user_emotion'],
-            'audio_url': audio_url,
+        # 5. 会話履歴の保存
+        try:
+            memory_manager.save_message(session_id, 'user', message, user_emotion)
+            memory_manager.save_message(session_id, 'assistant', response_text, response_emotion)
+        except Exception as e:
+            logger.error(f"Failed to save conversation history: {e}")
+
+        # 6. クライアントに応答を送信
+        socketio.emit('message_response', {
+            'text': response_text,
+            'emotion': response_emotion,
+            'user_emotion': user_emotion,
+            'audio_data': audio_data,
             'timestamp': datetime.now().isoformat(),
-            'personality': personality,  # キャラクター情報を返す
-            'is_tech_excited': response.get('is_tech_excited', False)  # 技術興奮状態
+            'personality': personality,
         })
-        
+
+        logger.info(f"[PERF] Total processing time: {time.time() - start_time:.2f}s")
+
     except Exception as e:
-        logger.error(f"Error handling message: {e}")
-        emit('error', {'message': 'メッセージの処理中にエラーが発生しました。'})
+        logger.error(f"An error occurred in handle_message: {e}")
+        emit('error', {'message': 'メッセージの処理中に予期せぬエラーが発生しました。'})
 
 @socketio.on('send_audio')
 def handle_audio(data):
-    """音声メッセージ受信時の処理"""
+    """音声メッセージ受信時の処理 - シンプル版"""
     try:
         session_id = data.get('session_id', 'default')
-        audio_data = bytes.fromhex(data.get('audio_data', ''))
-        
-        if not audio_data:
+        # フロントエンドから送られてくるのは16進数文字列なので、バイナリに戻す
+        audio_hex = data.get('audio_data', '')
+        personality = data.get('personality', 'yui_natural')
+        # voice_id は削除 - キャラクター別音声を常に使用
+
+        if not audio_hex:
             return
+
+        audio_data = bytes.fromhex(audio_hex)
         
-        # 非同期処理の実行
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        transcribed_text = loop.run_until_complete(stt_manager.transcribe_audio(audio_data))
+        # 音声認識 (STT)
+        transcribed_text = asyncio.run(stt_manager.transcribe_audio(audio_data))
         
         if not transcribed_text:
-            emit('error', {'message': '音声の認識に失敗しました。'})
-            loop.close()
+            emit('error', {'message': 'ごめんなさい、うまく聞き取れませんでした。'})
             return
-        
-        response = loop.run_until_complete(ai_manager.generate_response(session_id, transcribed_text))
-        loop.close()
 
-        # 音声合成
-        voice_actor_id = data.get('voice_actor_id')
-        audio_url = tts_manager.synthesize_speech(response['text'], voice_actor_id=voice_actor_id)
-        
-        # レスポンス送信
-        emit('audio_response', {
-            'transcribed_text': transcribed_text,
-            'response_text': response['text'],
-            'emotion': response['emotion'],
-            'user_emotion': response['user_emotion'],
-            'audio_url': audio_url,
-            'timestamp': datetime.now().isoformat()
+        # テキストが認識されたら、通常のメッセージ処理に渡す
+        handle_message({
+            'session_id': session_id,
+            'message': transcribed_text,
+            'personality': personality
         })
-        
+
     except Exception as e:
         logger.error(f"Error handling audio: {e}")
         emit('error', {'message': '音声の処理中にエラーが発生しました。'})
-
-@app.route('/api/proxy-audio')
-def proxy_audio():
-    """音声ファイルのプロキシエンドポイント（CORS回避）"""
-    try:
-        audio_url = request.args.get('url')
-        if not audio_url:
-            return jsonify({'error': 'URL parameter is required'}), 400
-        
-        # 外部音声ファイルをダウンロード
-        response = requests.get(audio_url, stream=True, timeout=30)
-        response.raise_for_status()
-        
-        # Content-Typeを設定してレスポンス
-        content_type = response.headers.get('Content-Type', 'audio/mpeg')
-        
-        def generate():
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    yield chunk
-        
-        from flask import Response
-        return Response(
-            generate(),
-            content_type=content_type,
-            headers={
-                'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Methods': 'GET',
-                'Cache-Control': 'public, max-age=3600'
-            }
-        )
-        
-    except Exception as e:
-        logger.error(f"Error proxying audio: {e}")
-        return jsonify({'error': 'Failed to proxy audio file'}), 500
 
 @app.route('/api/health')
 def health_check():
@@ -738,4 +1049,4 @@ if __name__ == '__main__':
     
     port = int(os.environ.get('PORT', 5000))
     print(f"Starting server on port {port}")
-    socketio.run(app, host='0.0.0.0', port=port, debug=True)
+    socketio.run(app, host='0.0.0.0', port=port, debug=True, use_reloader=False)
