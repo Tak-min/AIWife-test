@@ -38,9 +38,27 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configure Gemini AI
-genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
-primary_model = genai.GenerativeModel(os.getenv('GEMINI_PRIMARY_MODEL', 'gemini-1.5-flash'))
-fallback_model = genai.GenerativeModel(os.getenv('GEMINI_FALLBACK_MODEL', 'gemini-1.0-pro'))
+gemini_api_key = os.getenv('GEMINI_API_KEY')
+if not gemini_api_key:
+    print("[ERROR] GEMINI_API_KEY not found in environment variables")
+else:
+    print(f"[DEBUG] Gemini API key configured: {gemini_api_key[:20]}...")
+
+genai.configure(api_key=gemini_api_key)
+
+# モデル設定とバリデーション
+primary_model_name = os.getenv('GEMINI_PRIMARY_MODEL', 'gemini-1.5-flash')
+fallback_model_name = os.getenv('GEMINI_FALLBACK_MODEL', 'gemini-1.0-pro')
+
+print(f"[DEBUG] Primary model: {primary_model_name}")
+print(f"[DEBUG] Fallback model: {fallback_model_name}")
+
+try:
+    primary_model = genai.GenerativeModel(primary_model_name)
+    fallback_model = genai.GenerativeModel(fallback_model_name)
+    print("[DEBUG] Gemini models initialized successfully")
+except Exception as e:
+    print(f"[ERROR] Failed to initialize Gemini models: {e}")
 
 # API Configuration
 ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY')
@@ -285,12 +303,11 @@ class AIConversationManager:
         self.character_prompts = {
             'rei_engineer': "レイ:クール。技術の話で明るく。",
             'yui_natural': "ユイ:優しい天然。",
-            'friendly': "親しい友人。"
         }
 
     def get_system_prompt(self, personality: str) -> str:
         """キャラクターに応じたシステムプロンプトを取得"""
-        return self.character_prompts.get(personality, self.character_prompts['friendly'])
+        return self.character_prompts.get(personality, self.character_prompts['yui_natural'])
 
     def is_technical_topic(self, text: str) -> bool:
         """テキストが技術的な話題かどうかを判定"""
@@ -317,7 +334,7 @@ class AIConversationManager:
         else:
             return 'neutral'
     
-    async def generate_response_streaming(self, session_id: str, user_input: str, personality: str = 'friendly') -> None:
+    async def generate_response_streaming(self, session_id: str, user_input: str, personality: str = 'yui_natural') -> None:
         """ストリーミング応答生成 - チャンク単位で逐次処理"""
         try:
             perf_start = time.time()
@@ -447,15 +464,15 @@ class AIConversationManager:
             print(f"[DEBUG] Emitting message_chunk (no audio) for chunk {chunk_index}")
             socketio.emit('message_chunk', chunk_data)
     
-    def build_minimal_context(self, current_input: str, personality: str = 'friendly', is_tech_topic: bool = False) -> str:
+    def build_minimal_context(self, current_input: str, personality: str = 'yui_natural', is_tech_topic: bool = False) -> str:
         """軽量化されたキャラクタープロンプト（速度と個性のバランス）"""
         if personality == 'yui_natural':
-            return f"ユイ:天然で優しい女の子。「〜♪」「〜だよっ」と話す。\n{current_input}"
+            return f"ユイ:天然で優しい女の子。「〜♪」「〜だよ」と話す。\n{current_input}"
         elif personality == 'rei_engineer':
             return f"レイ:クールなエンジニア。短く的確に答える。技術話は詳しく。\n{current_input}"
         else:
-            return f"親しみやすく自然に返答。\n{current_input}"
-    async def generate_response(self, session_id: str, user_input: str, personality: str = 'friendly') -> Dict:
+            return f"ユイ:天然で優しい女の子。「〜♪」「〜だよ」と話す。\n{current_input}"
+    async def generate_response(self, session_id: str, user_input: str, personality: str = 'yui_natural') -> Dict:
         """AI応答を生成 - フォールバック用"""
         try:
             perf_start = time.time()
@@ -658,14 +675,24 @@ class TTSManager:
         voices = TTSManager.get_available_voices()
         
         if not voices:
-            # ElevenLabsのデフォルト音声ID（Rachel）
-            return "21m00Tcm4TlvDq8ikWAM"
+            # フォールバック: ユイの音声ID
+            return "vGQNBgLaiM3EdZtxIiuY"
         
         # 最初の利用可能な音声を返す
         return voices[0]['id']
     
     @staticmethod
-    def synthesize_speech_optimized(text: str, voice_id: str = None) -> Optional[str]:
+    def get_character_voice_id(personality: str) -> Optional[str]:
+        """キャラクター別の音声IDを取得"""
+        character_voices = {
+            'yui_natural': 'vGQNBgLaiM3EdZtxIiuY',  # kawaii
+            'rei_engineer': 'gARvXPexe5VF3cKZBian',  # mitsuki
+        }
+        
+        return character_voices.get(personality, TTSManager.get_default_voice_id())
+    
+    @staticmethod
+    def synthesize_speech_optimized(text: str, voice_id: str = None, personality: str = None) -> Optional[str]:
         """ElevenLabs APIで音声合成（エラーハンドリング強化版）"""
         if not elevenlabs_client:
             logger.error("ElevenLabs client not initialized. Check API key.")
@@ -677,7 +704,12 @@ class TTSManager:
             return None
         
         if not voice_id:
-            voice_id = TTSManager.get_default_voice_id()
+            # キャラクター別の音声IDを優先、なければデフォルト
+            if personality:
+                voice_id = TTSManager.get_character_voice_id(personality)
+            else:
+                voice_id = TTSManager.get_default_voice_id()
+            
             if not voice_id:
                 logger.error("No valid voice ID available")
                 return None
@@ -686,7 +718,7 @@ class TTSManager:
             print(f"[DEBUG] Starting TTS for text: '{text[:50]}...' with voice: {voice_id}")
             
             # 短いテキストの場合はより高速な設定を使用
-            model_id = "eleven_turbo_v2" if len(text) <= 100 else "eleven_multilingual_v2"
+            model_id = "eleven_flash_v2_5" if len(text) <= 100 else "eleven_multilingual_v2"
             
             # ElevenLabs APIで音声合成
             audio_generator = elevenlabs_client.text_to_speech.convert(
@@ -778,14 +810,12 @@ class STTManager:
             logger.error(f"STT error: {e}")
             return None
 
+# --- ここから下をすべて書き換える ---
+
 # Initialize managers
 memory_manager = MemoryManager(DATABASE_PATH)
-ai_manager = AIConversationManager(memory_manager)
 tts_manager = TTSManager()
 stt_manager = STTManager()
-
-# ElevenLabs専用キューを初期化
-elevenlabs_queue = ElevenLabsQueue(max_concurrent_requests=3)
 
 @app.route('/')
 def index():
@@ -827,13 +857,39 @@ def get_voices():
         
         return jsonify({
             "voices": voices,
-            "default_voice_id": TTSManager.get_default_voice_id()
+            "default_voice_id": TTSManager.get_default_voice_id(),
+            "character_voices": {
+                'yui_natural': TTSManager.get_character_voice_id('yui_natural'),
+                'rei_engineer': TTSManager.get_character_voice_id('rei_engineer')
+            }
         })
 
     except Exception as e:
         logger.error(f"Exception in get_voices: {e}")
         return jsonify({"error": "An internal error occurred"}), 500
 
+def analyze_emotion_simple(text: str) -> str:
+    """テキストから感情を分析（簡易版）"""
+    positive_words = ['嬉しい', '楽しい', '幸せ', '好き', 'ありがとう', '素晴らしい', 'わくわく']
+    negative_words = ['悲しい', '辛い', '嫌い', '疲れた', '困った', '不安']
+    surprised_words = ['驚いた', 'びっくり', 'すごい', '信じられない']
+    
+    if any(word in text for word in surprised_words):
+        return 'surprised'
+    elif any(word in text for word in positive_words):
+        return 'happy'
+    elif any(word in text for word in negative_words):
+        return 'sad'
+    else:
+        return 'neutral'
+
+def build_prompt(personality: str, user_input: str) -> str:
+    """キャラクターに応じたプロンプトを構築"""
+    prompts = {
+        'rei_engineer': f"あなたはレイという名前のクールな女性エンジニアです。常に簡潔かつ的確に答えます。技術的な話題には特に情熱的になります。\nユーザー: {user_input}\nレイ:",
+        'yui_natural': f"あなたはユイという名前の、少し天然で心優しい女の子です。「〜だよ！」「〜だね♪」といった親しみやすい口調で話します。\nユーザー: {user_input}\nユイ:",
+    }
+    return prompts.get(personality, prompts['yui_natural'])
 
 @socketio.on('connect')
 def handle_connect():
@@ -848,157 +904,114 @@ def handle_disconnect():
 
 @socketio.on('send_message')
 def handle_message(data):
-    """テキストメッセージ受信時の処理 - シンプル高速版"""
+    """テキストメッセージ受信時の処理 - 超シンプル版"""
+    start_time = time.time()
     try:
         session_id = data.get('session_id', 'default')
         message = data.get('message', '')
-        personality = data.get('personality', 'friendly')
-        voice_id = data.get('voice_id')
+        personality = data.get('personality', 'yui_natural')
+        # voice_id は削除 - キャラクター別音声を常に使用
         
         if not message.strip():
             return
-        
-        print(f"[DEBUG] Processing message with personality: {personality}")
-        
-        # 高速レスポンスキャッシュ（即答）
-        cached_responses = {
-            'こんにちは': {'yui_natural': 'こんにちは〜！ユイだよっ。会えて嬉しいな♪', 'rei_engineer': 'こんにちは', 'friendly': 'こんにちは！'},
-            'ありがとう': {'yui_natural': 'どういたしまして〜♪', 'rei_engineer': 'どういたしまして', 'friendly': 'どういたしまして！'},
-            'おはよう': {'yui_natural': 'おはようございます〜♪', 'rei_engineer': 'おはよう', 'friendly': 'おはよう！'},
-            'こんばんは': {'yui_natural': 'こんばんは〜♪', 'rei_engineer': 'こんばんは', 'friendly': 'こんばんは！'},
-            'はい': {'yui_natural': 'はい〜♪', 'rei_engineer': 'はい', 'friendly': 'はい！'},
-            'いいえ': {'yui_natural': 'そうですね〜', 'rei_engineer': 'そうですか', 'friendly': 'そうだね'}
-        }
-        
-        # キャッシュチェック（0.001秒で即答）
-        user_msg_clean = message.strip().replace('！', '').replace('!', '').replace('？', '').replace('?', '')
-        if user_msg_clean in cached_responses and personality in cached_responses[user_msg_clean]:
-            cached_response = cached_responses[user_msg_clean][personality]
-            print(f"[CACHE] Using cached response for: {user_msg_clean}")
-            
-            # 即座にレスポンス送信
-            socketio.emit('message_response', {
-                'text': cached_response,
-                'emotion': 'happy',
-                'user_emotion': 'neutral',
-                'audio_data': None,  # TTSは後で非同期実行
-                'timestamp': datetime.now().isoformat(),
-                'personality': personality,
-                'is_tech_excited': False
-            })
-            return
-        # 高速同期処理に変更
-        start_time = time.time()
-        
-        # AI応答生成（同期処理で高速化）
+
+        logger.info(f"Received message: '{message}' for personality: {personality}")
+
+        # 1. プロンプト構築
+        prompt = build_prompt(personality, message)
+        logger.info(f"Generated prompt: {prompt}")
+
+        # 2. Gemini API 呼び出し
         try:
-            context = ai_manager.build_minimal_context(message, personality, False)
-            
-            # Gemini API呼び出し（並行タイムアウト）
-            try:
-                import concurrent.futures
-                import threading
-                
-                def call_gemini():
-                    return primary_model.generate_content(context)
-                
-                # 3秒でタイムアウト
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(call_gemini)
-                    try:
-                        response = future.result(timeout=3.0)
-                        response_text = response.text
-                    except concurrent.futures.TimeoutError:
-                        raise TimeoutError("Gemini API timeout")
-                
-            except Exception as e:
-                print(f"[WARNING] Gemini failed ({str(e)[:50]}), using instant fallback")
-                
-                # 即座フォールバック応答
-                fallback_responses = {
-                    'yui_natural': 'えーっと...ちょっと考えさせてくださいね〜♪',
-                    'rei_engineer': '...処理中です',
-                    'friendly': 'ちょっと待ってね！'
-                }
-                response_text = fallback_responses.get(personality, 'しばらくお待ちください')
-            
-            ai_time = time.time() - start_time
-            print(f"[PERF] AI response generated in {ai_time:.2f}s")
-            
-            # 感情分析
-            user_emotion = ai_manager.analyze_emotion(message)
-            response_emotion = ai_manager.analyze_emotion(response_text)
-            
-            # 即座にテキストレスポンス送信（音声は後で）
-            socketio.emit('message_response', {
-                'text': response_text,
-                'emotion': response_emotion,
-                'user_emotion': user_emotion,
-                'audio_data': None,  # 音声は後で別送信
-                'timestamp': datetime.now().isoformat(),
-                'personality': personality,
-                'is_tech_excited': False
-            })
-            
-            total_time = time.time() - start_time
-            print(f"[PERF] Text response sent in {total_time:.2f}s")
-            
-            # 音声合成は非同期で実行（ユーザー体験向上）
-            def generate_audio_async():
-                try:
-                    tts_start = time.time()
-                    audio_data = tts_manager.synthesize_speech_optimized(response_text, voice_id=voice_id)
-                    tts_time = time.time() - tts_start
-                    print(f"[PERF] TTS synthesis completed in {tts_time:.2f}s")
-                    
-                    if audio_data:
-                        # 音声データを別途送信
-                        socketio.emit('audio_ready', {
-                            'audio_data': audio_data,
-                            'timestamp': datetime.now().isoformat()
-                        })
-                except Exception as e:
-                    print(f"[WARNING] TTS failed: {e}")
-            
-            # 音声生成をバックグラウンドで実行
-            threading.Thread(target=generate_audio_async, daemon=True).start()
-            
-            # 会話履歴保存（同期処理で高速化）
-            # ai_manager.save_conversation_sync(session_id, message, response_text, user_emotion, response_emotion)
-            
+            ai_start_time = time.time()
+            response = primary_model.generate_content(prompt)
+            response_text = response.text
+            logger.info(f"Gemini response received: '{response_text}'")
+            logger.info(f"[PERF] Gemini response time: {time.time() - ai_start_time:.2f}s")
         except Exception as e:
-            logger.error(f"Error in message processing: {e}")
-            socketio.emit('error', {'message': 'メッセージの処理中にエラーが発生しました。'})
+            logger.error(f"Gemini API call failed: {e}")
+            # フォールバックモデルを試行
+            try:
+                logger.warning("Attempting to use fallback model.")
+                response = fallback_model.generate_content(prompt)
+                response_text = response.text
+            except Exception as fallback_e:
+                logger.error(f"Fallback model also failed: {fallback_e}")
+                response_text = "ごめんなさい、今ちょっと考えがまとまらないみたい…。"
+
+        # 3. 感情分析
+        user_emotion = analyze_emotion_simple(message)
+        response_emotion = analyze_emotion_simple(response_text)
+
+        # 4. 音声合成 (TTS)
+        audio_data = None
+        if response_text:
+            try:
+                tts_start_time = time.time()
+                # キャラクター別の音声を常に使用（ユーザー指定の voice_id は無視）
+                effective_voice_id = TTSManager.get_character_voice_id(personality)
+                audio_data = tts_manager.synthesize_speech_optimized(
+                    response_text, 
+                    voice_id=effective_voice_id, 
+                    personality=personality
+                )
+                logger.info(f"[PERF] TTS synthesis time: {time.time() - tts_start_time:.2f}s")
+                logger.info(f"[DEBUG] Used voice ID: {effective_voice_id} for personality: {personality}")
+            except Exception as e:
+                logger.error(f"TTS synthesis failed: {e}")
         
+        # 5. 会話履歴の保存
+        try:
+            memory_manager.save_message(session_id, 'user', message, user_emotion)
+            memory_manager.save_message(session_id, 'assistant', response_text, response_emotion)
+        except Exception as e:
+            logger.error(f"Failed to save conversation history: {e}")
+
+        # 6. クライアントに応答を送信
+        socketio.emit('message_response', {
+            'text': response_text,
+            'emotion': response_emotion,
+            'user_emotion': user_emotion,
+            'audio_data': audio_data,
+            'timestamp': datetime.now().isoformat(),
+            'personality': personality,
+        })
+
+        logger.info(f"[PERF] Total processing time: {time.time() - start_time:.2f}s")
+
     except Exception as e:
-        logger.error(f"Error handling message: {e}")
-        emit('error', {'message': 'メッセージの処理中にエラーが発生しました。'})
+        logger.error(f"An error occurred in handle_message: {e}")
+        emit('error', {'message': 'メッセージの処理中に予期せぬエラーが発生しました。'})
 
 @socketio.on('send_audio')
 def handle_audio(data):
-    """音声メッセージ受信時の処理 - 最適化版"""
+    """音声メッセージ受信時の処理 - シンプル版"""
     try:
         session_id = data.get('session_id', 'default')
-        audio_data = bytes.fromhex(data.get('audio_data', ''))
-        personality = data.get('personality', 'friendly')
-        
-        if not audio_data:
+        # フロントエンドから送られてくるのは16進数文字列なので、バイナリに戻す
+        audio_hex = data.get('audio_data', '')
+        personality = data.get('personality', 'yui_natural')
+        # voice_id は削除 - キャラクター別音声を常に使用
+
+        if not audio_hex:
             return
+
+        audio_data = bytes.fromhex(audio_hex)
         
-        # ストリーミング処理を使用
-        async def process_audio_streaming():
-            transcribed_text = await stt_manager.transcribe_audio(audio_data)
-            
-            if not transcribed_text:
-                socketio.emit('error', {'message': '音声の認識に失敗しました。'})
-                return
-            
-            # 認識したテキストをストリーミング処理
-            await ai_manager.generate_response_streaming(session_id, transcribed_text, personality)
+        # 音声認識 (STT)
+        transcribed_text = asyncio.run(stt_manager.transcribe_audio(audio_data))
         
-        # 非同期処理を実行
-        asyncio.run(process_audio_streaming())
-        
+        if not transcribed_text:
+            emit('error', {'message': 'ごめんなさい、うまく聞き取れませんでした。'})
+            return
+
+        # テキストが認識されたら、通常のメッセージ処理に渡す
+        handle_message({
+            'session_id': session_id,
+            'message': transcribed_text,
+            'personality': personality
+        })
+
     except Exception as e:
         logger.error(f"Error handling audio: {e}")
         emit('error', {'message': '音声の処理中にエラーが発生しました。'})
@@ -1036,5 +1049,4 @@ if __name__ == '__main__':
     
     port = int(os.environ.get('PORT', 5000))
     print(f"Starting server on port {port}")
-    print("ElevenLabs TTS ready for high-speed processing")
-    socketio.run(app, host='0.0.0.0', port=port, debug=True)
+    socketio.run(app, host='0.0.0.0', port=port, debug=True, use_reloader=False)

@@ -69,6 +69,13 @@ class AIWifeApp {
         this.currentAnimationType = null;
         this.idleTimer = null;
         this.idleTimeout = 10000; // 10秒後にアイドルアニメーションに復帰
+        this.lastPlayedAnimation = null; // 前回再生したアニメーションを記録
+        this.isSchedulingNextAnimation = false; // 次のアニメーション予約中フラグ
+        
+        // キャラクター初期化フラグ
+        this.isCharacterInitialized = false;
+        this.hasPlayedAppearing = false;
+        this.isCharacterVisible = false;
         
         // UI要素
         this.elements = {
@@ -98,7 +105,7 @@ class AIWifeApp {
             voiceSpeed: 1.0,
             personality: 'yui_natural', // デフォルトをユイに変更
             memoryEnabled: true,
-            background: '', // 背景設定
+            background: 'sky.jpg', // デフォルト背景を空間に設定
             use3DUI: true // 3D UIモードを有効化
         };
         
@@ -116,7 +123,6 @@ class AIWifeApp {
             await this.loadBackground();
             await this.loadCharacter();
             this.loadSettings();
-            this.populateVoiceActors(); // ボイス選択肢を生成
             
             // キャラクター別のデフォルト音声を設定
             this.setCharacterDefaultVoice(this.settings.personality);
@@ -180,14 +186,31 @@ class AIWifeApp {
         
         // 設定変更
         document.getElementById('characterSelect').addEventListener('change', (e) => {
-            this.settings.character = e.target.value;
-            this.loadCharacter();
+            // キャラクターファイル名から性格を決定
+            const characterToPersonality = {
+                'avatar.vrm': 'rei_engineer',
+                'yui.vrm': 'yui_natural'
+            };
+            
+            const selectedCharacter = e.target.value;
+            const newPersonality = characterToPersonality[selectedCharacter];
+            
+            if (newPersonality) {
+                // 設定を更新
+                this.settings.character = selectedCharacter;
+                this.settings.personality = newPersonality;
+                
+                // キャラクター別の音声設定を適用
+                this.setCharacterDefaultVoice(newPersonality);
+                
+                // キャラクターをロードし、appearing.vrmaアニメーションを再生
+                this.loadCharacterWithAppearing();
+                
+                // 新しい会話セッションを開始
+                this.startNewConversation();
+            }
         });
 
-        document.getElementById('voiceActorSelect').addEventListener('change', (e) => {
-            this.settings.voiceId = e.target.value;
-        });
-        
         document.getElementById('backgroundSelect').addEventListener('change', (e) => {
             this.settings.background = e.target.value;
             this.loadBackground();
@@ -210,16 +233,6 @@ class AIWifeApp {
         document.getElementById('voiceSpeed').addEventListener('input', (e) => {
             this.settings.voiceSpeed = parseFloat(e.target.value);
             document.getElementById('voiceSpeedValue').textContent = e.target.value + 'x';
-        });
-        
-        document.getElementById('personalitySelect').addEventListener('change', (e) => {
-            this.settings.personality = e.target.value;
-            
-            // キャラクター別のデフォルト音声を設定
-            this.setCharacterDefaultVoice(e.target.value);
-            
-            // キャラクター変更時に新しい会話セッションを開始
-            this.startNewConversation();
         });
         
         document.getElementById('memoryToggle').addEventListener('change', (e) => {
@@ -296,14 +309,6 @@ class AIWifeApp {
         
         this.socket.on('message_response', (data) => {
             this.handleMessageResponse(data);
-        });
-        
-        // 音声データ受信イベント（非同期）
-        this.socket.on('audio_ready', (data) => {
-            console.log('[Debug] Audio data received asynchronously');
-            if (data.audio_data) {
-                this.playAudioData(data.audio_data);
-            }
         });
         
         // ストリーミング対応イベントハンドラー
@@ -540,8 +545,8 @@ class AIWifeApp {
         console.log('Sending 3D message:', message);
         console.log('Character personality:', this.settings.personality);
         
-        // ユーザーがメッセージを送信した際はThinkingアニメーションを再生
-        this.playAnimation('thinking', { loop: true });
+        // ユーザーがメッセージを送信した際はアイドルアニメーションを再生
+        this.playAnimation('idle', { loop: true });
         
         this.showLoading();
         
@@ -803,20 +808,124 @@ class AIWifeApp {
             lookAtQuatProxy.name = 'lookAtQuaternionProxy';
             this.vrm.scene.add(lookAtQuatProxy);
             
-            // シーンに追加
+            // シーンに追加（初期は非表示）
             this.scene.add(this.vrm.scene);
+            this.vrm.scene.visible = false;
+            this.isCharacterVisible = false;
             
             // アニメーションミキサーを作成
             this.mixer = new THREE.AnimationMixer(this.vrm.scene);
             
-            // 初期アイドルアニメーションの開始
-            this.playAnimation('idle', { loop: true });
+            // T-poseを回避するため、デフォルトポーズを設定
+            if (this.vrm.humanoid) {
+                this.vrm.humanoid.resetNormalizedPose();
+                console.log('VRM normalized pose reset completed');
+            }
+            
+            // 初期登場アニメーションを再生
+            this.playAppearingAnimation();
             
             this.hideLoading();
             console.log('Character loaded successfully:', this.vrm);
             
         } catch (error) {
             console.error('Failed to load character:', error);
+            this.showError('キャラクターの読み込みに失敗しました');
+            this.hideLoading();
+        }
+    }
+    
+    /**
+     * キャラクター変更時にappearing.vrmaアニメーションと共にロードする
+     */
+    async loadCharacterWithAppearing() {
+        try {
+            this.showLoading();
+            
+            // アニメーション関連のフラグをリセット（キャラクター切り替え用）
+            this.hasPlayedAppearing = false;
+            this.isCharacterInitialized = false;
+            this.isCharacterVisible = false;
+            
+            // キャラクターを非表示にしてからロード
+            if (this.vrm) {
+                this.vrm.scene.visible = false;
+                this.isCharacterVisible = false;
+            }
+            
+            // 既存のVRMを削除
+            if (this.vrm) {
+                this.scene.remove(this.vrm.scene);
+                this.vrm = null;
+            }
+            
+            if (this.mixer) {
+                this.mixer = null;
+            }
+            
+            // GLTFローダーの設定
+            const loader = new GLTFLoader();
+            loader.crossOrigin = 'anonymous';
+            
+            loader.register((parser) => new VRMLoaderPlugin(parser));
+            loader.register((parser) => new VRMAnimationLoaderPlugin(parser));
+            
+            // VRMファイルの読み込み
+            let modelUrl;
+            
+            // カスタムファイルかどうかを確認
+            const characterSelect = document.getElementById('characterSelect');
+            const selectedOption = characterSelect.querySelector(`option[value="${this.settings.character}"]`);
+            
+            if (selectedOption && selectedOption.dataset.localUrl) {
+                // カスタムアップロードファイルの場合
+                modelUrl = selectedOption.dataset.localUrl;
+            } else {
+                // デフォルトファイルの場合
+                modelUrl = `./models/${this.settings.character}`;
+            }
+            
+            const gltfVrm = await loader.loadAsync(modelUrl);
+            this.vrm = gltfVrm.userData.vrm;
+            
+            // パフォーマンス最適化
+            VRMUtils.removeUnnecessaryVertices(this.vrm.scene);
+            VRMUtils.removeUnnecessaryJoints(this.vrm.scene);
+            
+            // フラスタムカリングを無効化
+            this.vrm.scene.traverse((obj) => {
+                obj.frustumCulled = false;
+                obj.castShadow = true;
+                obj.receiveShadow = true;
+            });
+            
+            // LookAtクォータニオンプロキシを追加
+            const lookAtQuatProxy = new VRMLookAtQuaternionProxy(this.vrm.lookAt);
+            lookAtQuatProxy.name = 'lookAtQuaternionProxy';
+            this.vrm.scene.add(lookAtQuatProxy);
+            
+            // シーンに追加（初期は非表示）
+            this.scene.add(this.vrm.scene);
+            this.vrm.scene.visible = false;
+            this.isCharacterVisible = false;
+            
+            // アニメーションミキサーを作成
+            this.mixer = new THREE.AnimationMixer(this.vrm.scene);
+            
+            // T-poseを回避するため、デフォルトポーズを設定
+            if (this.vrm.humanoid) {
+                this.vrm.humanoid.resetNormalizedPose();
+                console.log('VRM normalized pose reset completed');
+            }
+            
+            // 登場アニメーションを再生（キャラクター変更時）
+            this.playAppearingAnimation();
+            
+            this.hideLoading();
+            console.log('Character loaded successfully with appearing animation:', this.vrm);
+            
+        } catch (error) {
+            console.error('Failed to load character with appearing:', error);
             this.showError('キャラクターの読み込みに失敗しました');
             this.hideLoading();
         }
@@ -887,128 +996,300 @@ class AIWifeApp {
      */
     async playAnimation(animationType, options = {}) {
         if (!this.vrm || !this.mixer) return;
-        
+
         // アニメーション種別に応じてパスを決定
         let animationPath;
-        
+        let isIdleType = false;
+
         switch (animationType) {
-            case 'thinking':
-                animationPath = './models/Thinking_out/Thinking.gltf';
-                break;
             case 'talking':
-                animationPath = './models/stand-talk_out/stand-talk.gltf';
-                break;
             case 'idle':
                 animationPath = await this.getRandomIdleAnimation();
+                isIdleType = true;
                 break;
-            case 'lying-sequence':
-                await this.playLyingSequence();
-                return;
             default:
                 // カスタムパスが指定された場合
                 animationPath = animationType;
         }
-        
+
         if (!animationPath) return;
-        
+
         // アニメーション状態を更新
-        this.updateAnimationState(animationType);
-        
-        // 現在のアニメーションを停止
-        this.mixer.stopAllAction();
-        
-        // 新しいアニメーションを読み込んで再生
+        this.updateAnimationState(isIdleType ? 'idle' : animationType);
+
+        // 新しいアニメーションを読み込み
         const animationData = await this.loadGLTFAnimation(animationPath, options);
-        if (animationData) {
-            animationData.action.play();
-            console.log('Playing animation:', animationPath);
-            
-            // 終了時のコールバック設定
-            if (options.onFinished) {
-                animationData.action.setLoop(THREE.LoopOnce);
-                animationData.action.clampWhenFinished = true;
-                
-                const onFinished = () => {
-                    this.mixer.removeEventListener('finished', onFinished);
-                    options.onFinished();
-                };
-                this.mixer.addEventListener('finished', onFinished);
-            }
-            
-            // アイドルアニメーション以外で、ループしない場合は終了後にアイドルタイマーを開始
-            if (animationType !== 'idle' && !options.loop) {
-                animationData.action.setLoop(THREE.LoopOnce);
-                animationData.action.clampWhenFinished = true;
-                
-                const autoIdleReturn = () => {
-                    this.mixer.removeEventListener('finished', autoIdleReturn);
-                    this.startIdleTimer();
-                };
-                this.mixer.addEventListener('finished', autoIdleReturn);
-            }
-        } else {
+        if (!animationData) {
             // アニメーションの読み込みに失敗した場合のフォールバック
-            console.warn(`Animation failed to load, using fallback: ${animationPath}`);
-            if (animationType !== 'idle') {
-                // idle以外の場合はidleアニメーションにフォールバック
-                this.playAnimation('idle', { loop: true });
-            } else {
-                // idleアニメーション自体が失敗した場合は、基本のアイドル状態を維持
-                console.warn('All idle animations failed, maintaining current state');
+            console.warn(`Animation failed to load, trying basic idle: ${animationPath}`);
+            
+            // lying-sequenceが失敗した場合は通常のアイドルアニメーションのみを試行
+            const basicIdleAnimations = [
+                './models/appearing.vrma',
+                './models/liked.vrma',
+                './models/waiting.vrma'
+            ];
+            
+            const fallbackAnimation = basicIdleAnimations[Math.floor(Math.random() * basicIdleAnimations.length)];
+            const fallbackData = await this.loadGLTFAnimation(fallbackAnimation, options);
+            
+            if (!fallbackData) {
+                console.error('Critical: No animations could be loaded');
+                return;
             }
+            
+            // フォールバックアニメーションを使用
+            this.playAnimationDirect(fallbackData, options, true);
+            return;
         }
+
+        // 正常なアニメーション再生
+        this.playAnimationDirect(animationData, options, isIdleType);
+    }
+
+    /**
+     * アニメーションを直接再生する共通関数
+     */
+    playAnimationDirect(animationData, options = {}, isIdleType = false) {
+        if (!animationData || !this.mixer) return;
+
+        // 現在再生中のアクションを取得
+        const currentActions = this.mixer._actions.filter(action => action.isRunning());
+        
+        // 新しいアニメーションの設定
+        const newAction = animationData.action;
+        newAction.reset();
+        
+        if (!options.loop) {
+            newAction.setLoop(THREE.LoopOnce);
+            newAction.clampWhenFinished = true;
+        } else if (isIdleType) {
+            // アイドルアニメーションは一回だけ再生して次に移行
+            newAction.setLoop(THREE.LoopOnce);
+            newAction.clampWhenFinished = true;
+        }
+
+        // スムーズな切り替えのためのクロスフェード
+        if (currentActions.length > 0) {
+            // 現在のアニメーションから新しいアニメーションにクロスフェード
+            const fadeTime = 0.2; // 0.2秒でフェード
+            
+            currentActions.forEach(currentAction => {
+                currentAction.crossFadeTo(newAction, fadeTime, false);
+            });
+            
+            newAction.play();
+        } else {
+            // 最初のアニメーションまたは緊急時の直接再生
+            this.mixer.stopAllAction();
+            newAction.play();
+        }
+
+        console.log('Playing animation:', animationData.clip.name || 'Unknown animation');
+
+        // アニメーション終了時の処理を統一
+        const onFinished = () => {
+            this.mixer.removeEventListener('finished', onFinished);
+            
+            if (options.onFinished) {
+                options.onFinished();
+                return; // カスタムコールバックがある場合はそれを優先
+            }
+            
+            // アイドルアニメーションの場合は、少し待ってから次のアニメーションを再生
+            if (isIdleType) {
+                setTimeout(() => {
+                    this.scheduleNextIdleAnimation();
+                }, 1000); // 1秒の間隔を設ける
+            } else if (!options.loop) {
+                // 非ループアニメーションの場合、アイドルアニメーションに戻る
+                setTimeout(() => {
+                    this.playAnimation('idle', { loop: true });
+                }, 500);
+            }
+        };
+
+        this.mixer.addEventListener('finished', onFinished);
     }
 
     /**
      * ランダムアイドルアニメーション選択
      */
     async getRandomIdleAnimation() {
+        // 全てのアニメーションファイルを含むアイドルローテーション
         const idleAnimations = [
-            './models/idle/idle2_out/idle2.gltf',
-            './models/idle/idle3_out/idle3.gltf', 
-            './models/idle/idle4_out/idle4.gltf',
-            './models/idle/walk-think_out/walk-think.gltf'
+            // トップレベルのVRMAファイル
+            './models/liked.vrma',
+            './models/waiting.vrma',
+            
+            // idleフォルダ内のVRMAファイル
+            './models/idle/idle2_out/idle2.vrma',
+            './models/idle/idle3_out/idle3.vrma', 
+            './models/idle/idle4_out/idle4.vrma',
+            
+            // より多様性を持たせるため、一部を複数回含める
+            './models/liked.vrma',
+            './models/waiting.vrma',
+            './models/idle/idle2_out/idle2.vrma',
+            './models/idle/idle3_out/idle3.vrma'
         ];
         
-        // ランダム選択
-        const randomIndex = Math.floor(Math.random() * idleAnimations.length);
-        return idleAnimations[randomIndex];
-    }
-
-    /**
-     * 横臥シーケンスの再生（高速化版）
-     */
-    async playLyingSequence() {
-        const sequence = [
-            './models/idle/LyingDown_out/LyingDown.gltf',
-            './models/idle/SittingIdle_out/SittingIdle.gltf',
-            './models/idle/GettingUp_out/GettingUp.gltf'
-        ];
-        
-        for (let i = 0; i < sequence.length; i++) {
-            const animationPath = sequence[i];
-            const isLast = i === sequence.length - 1;
+        // 前回と同じアニメーションを避ける
+        let availableAnimations = idleAnimations;
+        if (this.lastPlayedAnimation) {
+            availableAnimations = idleAnimations.filter(anim => anim !== this.lastPlayedAnimation);
             
-            await new Promise((resolve) => {
-                this.playAnimation(animationPath, {
-                    loop: false,
-                    onFinished: () => {
-                        console.log(`Lying sequence step ${i + 1} completed:`, animationPath);
-                        resolve();
-                    }
-                });
-            });
-            
-            // 待機時間を短縮（1秒 → 0.3秒）
-            if (!isLast) {
-                await new Promise(resolve => setTimeout(resolve, 300));
+            // もし前回のアニメーションを除外すると候補がなくなる場合、全候補を使用
+            if (availableAnimations.length === 0) {
+                availableAnimations = idleAnimations;
             }
         }
         
-        console.log('Lying sequence completed');
+        // ランダム選択
+        const randomIndex = Math.floor(Math.random() * availableAnimations.length);
+        const selectedAnimation = availableAnimations[randomIndex];
         
-        // シーケンス終了後はランダムアイドルに戻る
-        this.playAnimation('idle', { loop: true });
+        // 選択したアニメーションを記録
+        this.lastPlayedAnimation = selectedAnimation;
+        
+        return selectedAnimation;
+    }
+
+    /**
+     * 次のアイドルアニメーションをスケジュール
+     */
+    async scheduleNextIdleAnimation() {
+        if (this.isSchedulingNextAnimation) {
+            console.log('Already scheduling next animation, skipping...');
+            return;
+        }
+        
+        this.isSchedulingNextAnimation = true;
+        
+        try {
+            console.log('Scheduling next idle animation...');
+            await this.playAnimation('idle', { loop: true });
+        } catch (error) {
+            console.error('Error scheduling next animation:', error);
+        } finally {
+            this.isSchedulingNextAnimation = false;
+        }
+    }
+
+    /**
+     * 初期登場アニメーション（appearing）を再生
+     */
+    async playAppearingAnimation() {
+        console.log(`[Debug] playAppearingAnimation called - hasPlayedAppearing: ${this.hasPlayedAppearing}, vrm: ${!!this.vrm}, mixer: ${!!this.mixer}`);
+        
+        if (this.hasPlayedAppearing || !this.vrm || !this.mixer) {
+            console.log('[Debug] Skipping appearing animation due to conditions');
+            return;
+        }
+        
+        console.log('Playing appearing animation...');
+        
+        // appearing アニメーションを読み込み
+        const animationData = await this.loadGLTFAnimation('./models/appearing.vrma', { loop: false });
+        if (!animationData) {
+            console.error('Failed to load appearing animation');
+            // フォールバック: キャラクターを表示してアイドルアニメーションを開始
+            this.showCharacterAndStartIdle();
+            return;
+        }
+        
+        // アニメーション設定
+        const action = animationData.action;
+        action.reset();
+        action.setLoop(THREE.LoopOnce);
+        action.clampWhenFinished = true;
+        
+        // キャラクターを表示してアニメーション開始
+        this.vrm.scene.visible = true;
+        this.isCharacterVisible = true;
+        action.play();
+        
+        console.log('Appearing animation started, character is now visible');
+        
+        // アニメーション終了時の処理
+        const onAppearingFinished = () => {
+            this.mixer.removeEventListener('finished', onAppearingFinished);
+            this.hasPlayedAppearing = true;
+            this.isCharacterInitialized = true;
+            console.log('Appearing animation completed');
+            
+            // appearing 終了後は必ず waiting アニメーションを再生
+            this.playWaitingAnimation();
+        };
+        
+        this.mixer.addEventListener('finished', onAppearingFinished);
+    }
+    
+    /**
+     * キャラクターを表示してアイドルアニメーション開始（フォールバック用）
+     */
+    showCharacterAndStartIdle() {
+        if (!this.vrm) return;
+        
+        this.vrm.scene.visible = true;
+        this.isCharacterVisible = true;
+        this.hasPlayedAppearing = true;
+        this.isCharacterInitialized = true;
+        
+        // waiting アニメーションを再生
+        this.playWaitingAnimation();
+    }
+    
+    /**
+     * waiting アニメーションを再生
+     */
+    async playWaitingAnimation() {
+        if (!this.vrm || !this.mixer) return;
+        
+        console.log('Playing waiting animation...');
+        
+        const animationData = await this.loadGLTFAnimation('./models/waiting.vrma', { loop: false });
+        if (!animationData) {
+            console.warn('Failed to load waiting animation, falling back to idle');
+            this.scheduleNextIdleAnimation();
+            return;
+        }
+        
+        this.playAnimationDirect(animationData, { 
+            loop: false,
+            onFinished: () => {
+                console.log('Waiting animation completed, starting normal idle rotation');
+                setTimeout(() => {
+                    this.scheduleNextIdleAnimation();
+                }, 1000);
+            }
+        }, false);
+    }
+
+    /**
+     * liked アニメーションを再生（チャット応答時・アイドル時両用）
+     */
+    async playLikedAnimation() {
+        if (!this.vrm || !this.mixer) return;
+        
+        console.log('Playing liked animation...');
+        
+        const animationData = await this.loadGLTFAnimation('./models/liked.vrma', { loop: false });
+        if (!animationData) {
+            console.warn('Failed to load liked animation, falling back to idle');
+            this.scheduleNextIdleAnimation();
+            return;
+        }
+        
+        this.playAnimationDirect(animationData, { 
+            loop: false,
+            onFinished: () => {
+                console.log('Liked animation completed, returning to idle rotation');
+                setTimeout(() => {
+                    this.scheduleNextIdleAnimation();
+                }, 1000);
+            }
+        }, false);
     }
 
     /**
@@ -1056,41 +1337,25 @@ class AIWifeApp {
      */
     playEmotionAnimation(emotion, personality = 'friendly', isTechExcited = false) {
         if (!this.vrm || !this.mixer) return;
-        
+
         let selectedEmotion = emotion;
-        
+
         // レイキャラクターの技術興奮時は強制的にhappyに
         if (personality === 'rei_engineer' && isTechExcited) {
             selectedEmotion = 'happy';
             console.log('[Debug] Rei tech excitement: forcing happy emotion');
         }
-        
-        // 感情別のアニメーション選択
-        let animationType;
-        switch (selectedEmotion) {
-            case 'happy':
-                animationType = 'idle'; // ハッピーな時はランダムアイドル
-                break;
-            case 'sad':
-                animationType = 'lying-sequence'; // 悲しい時は横臥シーケンス
-                break;
-            case 'surprised':
-                // 驚いた時はthinkingアニメーションを使用（LookAroundファイルの代替）
-                animationType = 'thinking';
-                break;
-            default:
-                animationType = 'idle'; // デフォルトはランダムアイドル
-        }
-        
-        // アニメーション再生
-        this.playAnimation(animationType, { loop: true });
-        
+
+        // すべての感情でアイドルアニメーションを再生
+        // sad感情も他の感情と同様にアイドルアニメーションローテーションに参加
+        this.playAnimation('idle', { loop: true });
+
         // 表情も変更（キャラクター別強度調整）
         this.setExpression(selectedEmotion, personality, isTechExcited);
-        
+
         this.currentEmotion = selectedEmotion;
         console.log(`[Debug] Playing emotion animation: ${selectedEmotion} for ${personality}${isTechExcited ? ' (tech excited)' : ''}`);
-        
+
         // キャラクター情報を更新
         this.updateCharacterMood(selectedEmotion);
     }
@@ -1530,14 +1795,8 @@ class AIWifeApp {
             this.playEmotionAnimation(data.emotion, data.personality, data.is_tech_excited);
         }
         
-        // AI応答時はトークアニメーションを再生
-        this.playAnimation('talking', { 
-            loop: true,
-            onFinished: () => {
-                // 音声終了後はアイドルアニメーションに戻る
-                this.playAnimation('idle', { loop: true });
-            }
-        });
+        // AI応答時は liked アニメーションを再生（より魅力的な応答）
+        this.playLikedAnimation();
         
         // 音声再生
         if (data.audio_data) {
@@ -2091,63 +2350,18 @@ class AIWifeApp {
         }
     }
     
-    /**
-     * ElevenLabsの音声一覧を読み込んでUIに反映
-     */
-    async populateVoiceActors() {
-        try {
-            const response = await fetch('/api/voices');
-            if (!response.ok) {
-                throw new Error(`API request failed with status ${response.status}`);
-            }
-            const data = await response.json();
-            const selectElement = document.getElementById('voiceActorSelect');
-            
-            selectElement.innerHTML = '';
 
-            if (data.voices && data.voices.length > 0) {
-                // キャラクター別のデフォルト音声がない場合のみ、APIのデフォルトを使用
-                if (!this.settings.voiceId) {
-                    // キャラクター別のデフォルト音声を先に試行
-                    this.setCharacterDefaultVoice(this.settings.personality);
-                    
-                    // まだ設定されていない場合はAPIのデフォルトを使用
-                    if (!this.settings.voiceId) {
-                        this.settings.voiceId = data.default_voice_id || data.voices[0].id;
-                        console.log(`[Debug] Fallback voice ID set to: ${this.settings.voiceId}`);
-                    }
-                }
-
-                // Populate new options
-                data.voices.forEach(voice => {
-                    const option = document.createElement('option');
-                    option.value = voice.id;
-                    option.textContent = `${voice.name} (${voice.category})`;
-                    if (voice.id === this.settings.voiceId) {
-                        option.selected = true;
-                    }
-                    selectElement.appendChild(option);
-                });
-            } else {
-                 this.showError('利用可能なボイスが見つかりませんでした。');
-            }
-        } catch (error) {
-            console.error('Failed to populate voice actors:', error);
-            this.showError('ボイス一覧の取得に失敗しました');
-        }
-    }
-    
     /**
      * キャラクター別のデフォルト設定（音声・モデル）を適用
      */
     setCharacterDefaultVoice(personality) {
         const characterSettings = {
             'rei_engineer': {
-                voiceId: 'cgSgspJ2msm6clMCkdW9', // Jessica
+                voiceId: 'gARvXPexe5VF3cKZBian', //mitsuki
                 model: 'avatar.vrm' // レイのモデル
             },
             'yui_natural': {
-                voiceId: 'Xb7hH8MSUJpSbSDYk0k2', // 指定された音声ID
+                voiceId: 'vGQNBgLaiM3EdZtxIiuY', // kawaiiairlicita
                 model: 'yui.vrm' // ユイのモデル
             }
         };
@@ -2158,28 +2372,9 @@ class AIWifeApp {
             this.settings.voiceId = characterConfig.voiceId;
             console.log(`[Debug] Character voice set to: ${this.settings.voiceId} for ${personality}`);
             
-            // モデル設定
-            const oldCharacter = this.settings.character;
+            // モデル設定（設定のみ、実際のロードは呼び出し元で行う）
             this.settings.character = characterConfig.model;
             console.log(`[Debug] Character model set to: ${this.settings.character} for ${personality}`);
-            
-            // 音声選択UIを更新
-            const voiceSelect = document.getElementById('voiceActorSelect');
-            if (voiceSelect) {
-                voiceSelect.value = this.settings.voiceId;
-            }
-            
-            // キャラクターモデル選択UIを更新
-            const characterSelect = document.getElementById('characterSelect');
-            if (characterSelect) {
-                characterSelect.value = this.settings.character;
-            }
-            
-            // モデルが変更された場合は再読み込み
-            if (oldCharacter !== this.settings.character) {
-                console.log(`[Debug] Reloading character model from ${oldCharacter} to ${this.settings.character}`);
-                this.loadCharacter();
-            }
         }
     }
     

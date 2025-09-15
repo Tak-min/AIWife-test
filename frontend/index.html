@@ -31,22 +31,10 @@
             <div class="setting-group">
                 <h4>キャラクター設定</h4>
                 <div class="setting-item">
-                    <label for="personalitySelect">キャラクター:</label>
-                    <select id="personalitySelect">
-                        <option value="rei_engineer">レイ (AIエンジニア)</option>
-                        <option value="yui_natural">ユイ (天然な癒し系)</option>
-                        <option value="friendly">汎用 - 親しみやすい</option>
-                        <option value="shy">汎用 - 内気</option>
-                        <option value="energetic">汎用 - 元気</option>
-                        <option value="calm">汎用 - 落ち着いた</option>
-                    </select>
-                </div>
-                
-                <div class="setting-item">
-                    <label for="characterSelect">モデル選択:</label>
+                    <label for="characterSelect">キャラクター:</label>
                     <select id="characterSelect">
-                        <option value="avatar.vrm">レイ</option>
-                        <option value="yui.vrm">ユイ</option>
+                        <option value="avatar.vrm">レイ (AIエンジニア)</option>
+                        <option value="yui.vrm" selected>ユイ (天然な癒し系)</option>
                     </select>
                 </div>
                 
@@ -91,13 +79,6 @@
             
             <div class="setting-group">
                 <h4>音声設定</h4>
-                <div class="setting-item">
-                    <label for="voiceActorSelect">キャラクターボイス:</label>
-                    <select id="voiceActorSelect">
-                        <!-- Options will be populated by JavaScript -->
-                    </select>
-                </div>
-                
                 <div class="setting-item">
                     <label for="volumeSlider">音量:</label>
                     <input type="range" id="volumeSlider" min="0" max="100" value="70">
