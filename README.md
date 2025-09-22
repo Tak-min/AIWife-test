@@ -11,3 +11,5 @@ Character Responses: The character responds to user's text input with animations
 Animation Synchronization: The character performs animations that convey its response, and also displays emotion-based animations.
 
 This application provides an interactive experience with a 3D character through text chat.
+
+https://aiwife-test-production.up.railway.app/
