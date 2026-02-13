@@ -14,7 +14,7 @@ import { authService } from './auth.js';
 // ========== BACKEND CONFIGURATION ==========
 // TODO: Cloudflare TunnelのURLを設定してください
 // 例: const BACKEND_URL = 'https://your-tunnel-name.trycloudflare.com';
-const BACKEND_URL = 'https://phases-kruger-police-london.trycloudflare.com' ; // 開発時はこのまま、本番時は上記のようにCloudflare TunnelのURLに変更
+const BACKEND_URL = 'https://medicines-from-dramatic-optimize.trycloudflare.com/' ; // 開発時はこのまま、本番時は上記のようにCloudflare TunnelのURLに変更
 
 class AIWifeApp {
     constructor() {
@@ -112,7 +112,7 @@ class AIWifeApp {
         // 設定
         this.settings = {
             character: 'Shiro.vrm', // デフォルトをShiroに変更
-            voiceId: 'ocZQ262SsZb9RIxcQBOj', // Shiroの音声ID
+            voiceId: 'ngvNHfiCrXLPAHcTrZK1', // Shiroの音声ID
             volume: 0.7,
             voiceSpeed: 1.0,
             personality: 'shiro', // デフォルトをshiroに変更
@@ -131,7 +131,7 @@ class AIWifeApp {
             id: 'default-shiro',
             name: 'シロ',
             vrm_file: 'Shiro.vrm',
-            voice_id: 'ocZQ262SsZb9RIxcQBOj',
+            voice_id: 'ngvNHfiCrXLPAHcTrZK1',
             is_default: true,
             prompt: `<キャラクター設定>
 名前:シロ (Shiro)
@@ -2676,6 +2676,7 @@ class AIWifeApp {
 
             // 音声オブジェクトを作成
             const audio = new Audio(audioUrl);
+
             audio.crossOrigin = "anonymous";
             console.log('[Debug] Created Audio object with URL:', audioUrl);
             console.log('[Debug] Audio object created successfully:', !!audio);
