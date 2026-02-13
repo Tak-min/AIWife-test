@@ -14,7 +14,7 @@ import { authService } from './auth.js';
 // ========== BACKEND CONFIGURATION ==========
 // TODO: Cloudflare TunnelのURLを設定してください
 // 例: const BACKEND_URL = 'https://your-tunnel-name.trycloudflare.com';
-const BACKEND_URL = window.location.origin; // 開発時はこのまま、本番時は上記のようにCloudflare TunnelのURLに変更
+const BACKEND_URL = 'https://phases-kruger-police-london.trycloudflare.com' ; // 開発時はこのまま、本番時は上記のようにCloudflare TunnelのURLに変更
 
 class AIWifeApp {
     constructor() {
