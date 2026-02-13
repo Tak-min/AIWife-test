@@ -1567,6 +1567,15 @@ def health_check():
     """ヘルスチェックエンドポイント"""
     return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat()})
 
+# すべてのレスポンス（特に静的ファイル）にCORSヘッダーを強制的に付与する
+@app.after_request
+def add_header(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    return response
+
+
 if __name__ != '__main__':
     # Vercel環境での起動
     print("AI Wife Application Starting for Vercel...")

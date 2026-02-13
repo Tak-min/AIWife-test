@@ -2676,6 +2676,7 @@ class AIWifeApp {
 
             // 音声オブジェクトを作成
             const audio = new Audio(audioUrl);
+            audio.crossOrigin = "anonymous";
             console.log('[Debug] Created Audio object with URL:', audioUrl);
             console.log('[Debug] Audio object created successfully:', !!audio);
 
