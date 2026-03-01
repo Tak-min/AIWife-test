@@ -3,11 +3,16 @@
 """
 import sqlite3
 import bcrypt
+import os
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _get_default_shiro_voice_id() -> str:
+    return os.getenv('ELEVENLABS_VOICE_ID_SHIRO') or os.getenv('ELEVENLABS_VOICE_ID_DEFAULT') or ''
 
 
 class User:
@@ -199,7 +204,7 @@ class User:
             cursor.execute('''
                 INSERT INTO characters (user_id, name, vrm_file, prompt, voice_id, is_default)
                 VALUES (?, ?, ?, ?, ?, ?)
-            ''', (user_id, 'シロ', 'Shiro.vrm', shiro_prompt, 'ocZQ262SsZb9RIxcQBOj', 1))
+            ''', (user_id, 'シロ', 'Shiro.vrm', shiro_prompt, _get_default_shiro_voice_id(), 1))
             
             conn.commit()
             conn.close()
@@ -532,7 +537,7 @@ class User:
             cursor.execute('''
                 INSERT INTO characters (user_id, name, vrm_file, prompt, voice_id, is_default)
                 VALUES (?, ?, ?, ?, ?, ?)
-            ''', (user_id, 'シロ', 'Shiro.vrm', shiro_prompt, 'ocZQ262SsZb9RIxcQBOj', 1))
+            ''', (user_id, 'シロ', 'Shiro.vrm', shiro_prompt, _get_default_shiro_voice_id(), 1))
             
             conn.commit()
             conn.close()

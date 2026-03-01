@@ -46,6 +46,18 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 load_dotenv()
 
 
+def get_env_voice_id(personality: str = 'shiro') -> Optional[str]:
+    """.env からキャラクターに対応する voice_id を取得"""
+    default_voice_id = os.getenv('ELEVENLABS_VOICE_ID_DEFAULT')
+    voice_env_map = {
+        'shiro': 'ELEVENLABS_VOICE_ID_SHIRO',
+        'yui_natural': 'ELEVENLABS_VOICE_ID_YUI_NATURAL',
+        'rei_engineer': 'ELEVENLABS_VOICE_ID_REI_ENGINEER',
+    }
+    env_key = voice_env_map.get(personality)
+    return os.getenv(env_key, default_voice_id) if env_key else default_voice_id
+
+
 app = Flask(__name__, static_folder='../frontend', template_folder='../frontend', static_url_path='')
 # ProxyFix適用 - Renderなどのプロキシ環境でHTTPSスキームを正しく認識
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
@@ -671,7 +683,7 @@ class TTSManager:
     """VITS音声合成システムの管理クラス"""
     
     @staticmethod
-    def get_available_voices() -> List[Dict]:
+    def get_available_voices() -> List[Dict]:   
         """利用可能な音声一覧を取得"""
         try:
             speakers = voice_service.get_available_speakers()
@@ -691,13 +703,12 @@ class TTSManager:
     @staticmethod
     def get_default_voice_id() -> Optional[str]:
         """デフォルトの音声IDを取得"""
-        return "shiro"  # Default character ID
+        return get_env_voice_id('shiro')
     
     @staticmethod
     def get_character_voice_id(personality: str) -> Optional[str]:
         """キャラクター別の音声IDを取得"""
-        # VoiceServiceのspeaker_mapに対応するキャラクターIDを返す
-        return personality if personality else "shiro"
+        return get_env_voice_id(personality or 'shiro')
     
     @staticmethod
     def synthesize_speech_optimized(text: str, voice_id: str = None, personality: str = None) -> Optional[str]:
@@ -707,8 +718,9 @@ class TTSManager:
             logger.warning("Empty text provided for TTS")
             return None
         
-        # キャラクターIDの決定
-        character_id = personality or voice_id or "shiro"
+        # キャラクターID/voice_id の決定
+        character_id = personality or "shiro"
+        resolved_voice_id = voice_id or get_env_voice_id(character_id)
         
         try:
             print(f"[DEBUG] Starting VITS TTS for text: '{text[:50]}...' with character: {character_id}")
@@ -716,7 +728,8 @@ class TTSManager:
             # VoiceServiceで音声合成
             result = voice_service.generate_audio(
                 text=text,
-                character_id=character_id
+                character_id=character_id,
+                voice_id=resolved_voice_id
             )
             
             if result:
@@ -1154,7 +1167,9 @@ def get_voices():
                 }],
                 "default_voice_id": TTSManager.get_default_voice_id(),
                 "character_voices": {
-                    'shiro': TTSManager.get_character_voice_id('shiro')
+                    'shiro': TTSManager.get_character_voice_id('shiro'),
+                    'yui_natural': TTSManager.get_character_voice_id('yui_natural'),
+                    'rei_engineer': TTSManager.get_character_voice_id('rei_engineer')
                 }
             })
         
@@ -1162,7 +1177,9 @@ def get_voices():
             "voices": voices,
             "default_voice_id": TTSManager.get_default_voice_id(),
             "character_voices": {
-                'shiro': TTSManager.get_character_voice_id('shiro')
+                'shiro': TTSManager.get_character_voice_id('shiro'),
+                'yui_natural': TTSManager.get_character_voice_id('yui_natural'),
+                'rei_engineer': TTSManager.get_character_voice_id('rei_engineer')
             }
         })
 
@@ -1209,7 +1226,7 @@ def get_characters(current_user):
                 name='シロ',
                 vrm_file='Shiro.vrm',
                 prompt=shiro_prompt,
-                voice_id='ocZQ262SsZb9RIxcQBOj',
+                voice_id=get_env_voice_id('shiro') or '',
                 is_default=True
             )
             

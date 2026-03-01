@@ -112,7 +112,7 @@ class AIWifeApp {
         // 設定
         this.settings = {
             character: 'Shiro.vrm', // デフォルトをShiroに変更
-            voiceId: 'ngvNHfiCrXLPAHcTrZK1', // Shiroの音声ID
+            voiceId: null,
             volume: 0.7,
             voiceSpeed: 1.0,
             personality: 'shiro', // デフォルトをshiroに変更
@@ -125,13 +125,14 @@ class AIWifeApp {
         this.characters = [];
         this.currentCharacter = null;
         this.availableVoices = [];
+        this.characterVoices = {};
         
         // デフォルトのShiroキャラクター（ハードコード）
         this.defaultShiroCharacter = {
             id: 'default-shiro',
             name: 'シロ',
             vrm_file: 'Shiro.vrm',
-            voice_id: 'ngvNHfiCrXLPAHcTrZK1',
+            voice_id: null,
             is_default: true,
             prompt: `<キャラクター設定>
 名前:シロ (Shiro)
@@ -395,6 +396,9 @@ class AIWifeApp {
             if (voicesResponse.ok) {
                 const voicesData = await voicesResponse.json();
                 this.availableVoices = voicesData.voices || [];
+                this.characterVoices = voicesData.character_voices || {};
+                this.settings.voiceId = voicesData.default_voice_id || this.settings.voiceId;
+                this.defaultShiroCharacter.voice_id = this.characterVoices.shiro || this.settings.voiceId || this.defaultShiroCharacter.voice_id;
                 console.log('[Debug] Loaded voices:', this.availableVoices.length);
             }
             
@@ -2954,11 +2958,9 @@ class AIWifeApp {
     setCharacterDefaultVoice(personality) {
         const characterSettings = {
             'rei_engineer': {
-                voiceId: 'gARvXPexe5VF3cKZBian', //mitsuki
                 model: 'avatar.vrm' // レイのモデル
             },
             'yui_natural': {
-                voiceId: 'vGQNBgLaiM3EdZtxIiuY', // kawaiiairlicita
                 model: 'yui.vrm' // ユイのモデル
             }
         };
@@ -2966,7 +2968,7 @@ class AIWifeApp {
         const characterConfig = characterSettings[personality];
         if (characterConfig) {
             // 音声ID設定
-            this.settings.voiceId = characterConfig.voiceId;
+            this.settings.voiceId = this.characterVoices[personality] || this.settings.voiceId;
             console.log(`[Debug] Character voice set to: ${this.settings.voiceId} for ${personality}`);
             
             // モデル設定（設定のみ、実際のロードは呼び出し元で行う）

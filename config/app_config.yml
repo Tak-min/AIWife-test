@@ -4,13 +4,13 @@
 character_config:
   default_character: "Shiro.vrm"  # Shiroをデフォルトに
   default_personality: "shiro"
-  default_voice_id: "ocZQ262SsZb9RIxcQBOj"  # Shiro専用音声
+  default_voice_id: "${ELEVENLABS_VOICE_ID_DEFAULT}"
   available_characters:
     shiro:
       file: "Shiro.vrm"
       personality: "shiro"
       display_name: "シロ (白狼の守護者)"
-      voice_id: "ocZQ262SsZb9RIxcQBOj"
+      voice_id: "${ELEVENLABS_VOICE_ID_SHIRO}"
 
 # Animation Settings
 animation_config:
@@ -61,8 +61,8 @@ tts_settings:
     output_format: "mp3_22050_32"
     
   character_voices:
-    yui_natural: "vGQNBgLaiM3EdZtxIiuY"  # kawaii voice
-    rei_engineer: "gARvXPexe5VF3cKZBian"  # mitsuki voice
+    yui_natural: "${ELEVENLABS_VOICE_ID_YUI_NATURAL}"
+    rei_engineer: "${ELEVENLABS_VOICE_ID_REI_ENGINEER}"
 
 # Background Settings
 background_config:

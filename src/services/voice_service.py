@@ -37,12 +37,17 @@ class VoiceService:
         # ElevenLabs API endpoint
         self.base_url = "https://api.elevenlabs.io/v1"
         
-        # Voice ID mapping for different characters
+        # Voice ID mapping loaded from environment variables
+        default_voice_id = os.getenv('ELEVENLABS_VOICE_ID_DEFAULT')
+        if not default_voice_id:
+            logger.error("ELEVENLABS_VOICE_ID_DEFAULT not found in environment variables")
+            raise ValueError("ELEVENLABS_VOICE_ID_DEFAULT is required")
+
         self.voice_map = {
-            "default": "21m00Tcm4TlvDq8ikWAM",  # Rachel - default voice
-            "shiro": "21m00Tcm4TlvDq8ikWAM",    # Rachel - calm and clear
-            "yui_natural": "EXAVITQu4vr4xnSDxMaL",  # Bella - warm and friendly
-            "rei_engineer": "ErXwobaYiN019PkySvjV",  # Antoni - professional
+            "default": default_voice_id,
+            "shiro": os.getenv('ELEVENLABS_VOICE_ID_SHIRO', default_voice_id),
+            "yui_natural": os.getenv('ELEVENLABS_VOICE_ID_YUI_NATURAL', default_voice_id),
+            "rei_engineer": os.getenv('ELEVENLABS_VOICE_ID_REI_ENGINEER', default_voice_id),
         }
         
         # Model selection
