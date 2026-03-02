@@ -22,8 +22,18 @@ class User:
         self.db_path = db_path
         self.init_tables()
     
-    def init_tables(self):
+    def init_tables(self, _is_fallback: bool = False):
         """ユーザー関連テーブルの初期化"""
+        # DBディレクトリが存在しない場合は作成（MemoryManagerと同じ処理）
+        db_dir = os.path.dirname(os.path.abspath(self.db_path))
+        if db_dir and not os.path.exists(db_dir):
+            try:
+                os.makedirs(db_dir, exist_ok=True)
+            except OSError as e:
+                # ベースディレクトリ作成失敗 → /tmp にフォールバック
+                logger.error(f"Cannot create DB directory {db_dir}: {e}. Falling back to /tmp/memory.db")
+                self.db_path = '/tmp/memory.db'
+
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -139,8 +149,15 @@ class User:
             logger.info("User tables initialized successfully")
             
         except sqlite3.Error as e:
-            logger.error(f"Failed to initialize user tables: {e}")
-            raise
+            logger.error(f"Failed to initialize user tables at {self.db_path}: {e}")
+            # raise を削除し、/tmp へのフォールバックを試行する。
+            # これによりFlask起動クラッシュを防ぐ。
+            if not _is_fallback and self.db_path != '/tmp/memory.db':
+                logger.warning("Falling back to /tmp/memory.db for User model")
+                self.db_path = '/tmp/memory.db'
+                self.init_tables(_is_fallback=True)
+            else:
+                logger.error("Cannot initialize user tables even in /tmp. User operations will fail.")
     
     def _migrate_users_table(self, cursor):
         """既存のusersテーブルにavatar_urlカラムを追加（マイグレーション）"""
@@ -161,12 +178,18 @@ class User:
             logger.debug(f"Migration note: {e}")
     
     def create_user(self, username: str, email: str, password: str) -> Optional[int]:
-        """新規ユーザーを作成"""
+        """新規ユーザーを作成。
+        成功: user_id (int)
+        重複エラー: None （呼び出し元は 409 を返すこと）
+        その他のエラー: 例外を raise （呼び出し元は 500 を返すこと）
+        """
+        conn = None
         try:
             # パスワードハッシュ化
             password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt(rounds=12))
             
             conn = sqlite3.connect(self.db_path)
+            conn.execute("PRAGMA journal_mode=WAL")  # 書き込み競合を軽減
             cursor = conn.cursor()
             
             cursor.execute('''
@@ -176,9 +199,9 @@ class User:
             
             user_id = cursor.lastrowid
             
-            # デフォルト設定を作成
+            # デフォルト設定を作成（重複挿入に備え INSERT OR IGNORE を使用）
             cursor.execute('''
-                INSERT INTO user_settings (user_id)
+                INSERT OR IGNORE INTO user_settings (user_id)
                 VALUES (?)
             ''', (user_id,))
             
@@ -202,22 +225,29 @@ class User:
 上記のキャラクター設定に応じて、シロとしてマスターに反応してください。'''
             
             cursor.execute('''
-                INSERT INTO characters (user_id, name, vrm_file, prompt, voice_id, is_default)
+                INSERT OR IGNORE INTO characters (user_id, name, vrm_file, prompt, voice_id, is_default)
                 VALUES (?, ?, ?, ?, ?, ?)
             ''', (user_id, 'シロ', 'Shiro.vrm', shiro_prompt, _get_default_shiro_voice_id(), 1))
             
             conn.commit()
-            conn.close()
-            
             logger.info(f"User created: {username} (ID: {user_id})")
             return user_id
             
         except sqlite3.IntegrityError as e:
-            logger.error(f"User creation failed (duplicate): {e}")
-            return None
+            # UNIQUE制約違反 = ユーザー名またはメール重複
+            if conn:
+                conn.rollback()
+            logger.warning(f"User creation failed (duplicate): {e}")
+            return None  # 呼び出し元で 409 を返す
         except Exception as e:
-            logger.error(f"User creation failed: {e}")
-            return None
+            # DBパスが壊れている等のシステムエラー → 例外を再raiseして 500 扱いにする
+            if conn:
+                conn.rollback()
+            logger.error(f"User creation failed (system error): {e}")
+            raise  # register() の except Exception: で 500 を返す
+        finally:
+            if conn:
+                conn.close()
     
     def verify_password(self, email: str, password: str) -> Optional[Dict]:
         """パスワードを検証してユーザー情報を返す"""
@@ -340,21 +370,40 @@ class User:
             return None
     
     def get_user_settings(self, user_id: int) -> Optional[Dict]:
-        """ユーザー設定を取得"""
+        """ユーザー設定を取得。存在しない場合はデフォルト設定を自動作成して返す"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
+
             cursor.execute('''
-                SELECT character_preference, background_preference, 
+                SELECT character_preference, background_preference,
                        voice_volume, voice_speed, memory_enabled, use_3d_ui
                 FROM user_settings
                 WHERE user_id = ?
             ''', (user_id,))
-            
+
             result = cursor.fetchone()
+
+            if not result:
+                # 新規ユーザーや設定挿入漏れに備え、デフォルト設定をここで自動作成
+                logger.warning(f"user_settings not found for user_id={user_id}. Auto-creating defaults.")
+                cursor.execute('''
+                    INSERT OR IGNORE INTO user_settings (user_id)
+                    VALUES (?)
+                ''', (user_id,))
+                conn.commit()
+
+                # 再取得
+                cursor.execute('''
+                    SELECT character_preference, background_preference,
+                           voice_volume, voice_speed, memory_enabled, use_3d_ui
+                    FROM user_settings
+                    WHERE user_id = ?
+                ''', (user_id,))
+                result = cursor.fetchone()
+
             conn.close()
-            
+
             if result:
                 return {
                     'character': result[0],
@@ -364,12 +413,28 @@ class User:
                     'memoryEnabled': bool(result[4]),
                     'use3DUI': bool(result[5])
                 }
-            
-            return None
-            
+
+            # 万が一取得できない場合はハードコードしたデフォルト値を返す
+            logger.error(f"Could not create user_settings for user_id={user_id}. Returning hardcoded defaults.")
+            return {
+                'character': 'Shiro.vrm',
+                'background': 'sky.jpg',
+                'volume': 0.7,
+                'voiceSpeed': 1.0,
+                'memoryEnabled': True,
+                'use3DUI': True
+            }
+
         except Exception as e:
             logger.error(f"Failed to get user settings: {e}")
-            return None
+            return {
+                'character': 'Shiro.vrm',
+                'background': 'sky.jpg',
+                'volume': 0.7,
+                'voiceSpeed': 1.0,
+                'memoryEnabled': True,
+                'use3DUI': True
+            }
     
     def update_user_settings(self, user_id: int, settings: Dict):
         """ユーザー設定を更新"""
@@ -509,9 +574,9 @@ class User:
                 VALUES (?, ?, ?)
             ''', (user_id, provider, provider_user_id))
             
-            # デフォルト設定を作成
+            # デフォルト設定を作成（重複・DB一時ロックに備え INSERT OR IGNORE を使用）
             cursor.execute('''
-                INSERT INTO user_settings (user_id)
+                INSERT OR IGNORE INTO user_settings (user_id)
                 VALUES (?)
             ''', (user_id,))
             
@@ -535,7 +600,7 @@ class User:
 上記のキャラクター設定に応じて、シロとしてマスターに反応してください。'''
             
             cursor.execute('''
-                INSERT INTO characters (user_id, name, vrm_file, prompt, voice_id, is_default)
+                INSERT OR IGNORE INTO characters (user_id, name, vrm_file, prompt, voice_id, is_default)
                 VALUES (?, ?, ?, ?, ?, ?)
             ''', (user_id, 'シロ', 'Shiro.vrm', shiro_prompt, _get_default_shiro_voice_id(), 1))
             

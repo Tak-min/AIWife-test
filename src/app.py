@@ -102,8 +102,28 @@ voice_service = get_voice_service(force_reinit=True)
 # データベースパスを現在のディレクトリからの相対パスで設定
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_dir)
-# Vercelでは/tmpにしか書き込めないため、データベースパスを/tmpに変更
-DATABASE_PATH = '/tmp/memory.db' if os.getenv('VERCEL') else os.getenv('DATABASE_PATH', os.path.join(project_root, 'config', 'memory.db'))
+
+# 環境ごとのDBパス決定ロジック
+# ・Vercel       : /tmp/memory.db  (書き込み可能な唯一の場所)
+# ・Render       : /tmp/memory.db  (free plan はディスク永続化不可)
+#                  ※ DATABASE_PATH を明示した場合はその値を絶対パスで使用
+# ・ローカル     : DATABASE_PATH env var または {project_root}/config/memory.db
+def _resolve_db_path() -> str:
+    if os.getenv('VERCEL'):
+        return '/tmp/memory.db'
+    if os.getenv('RENDER'):
+        # Render は起動時に RENDER=true を自動で設定する
+        # DATABASE_PATH が明示されていればその値を、なければ /tmp を使用
+        raw = os.getenv('DATABASE_PATH', '/tmp/memory.db')
+    else:
+        raw = os.getenv('DATABASE_PATH', os.path.join(project_root, 'config', 'memory.db'))
+    # 相対パスを絶対パスへ変換（実行時のCWDではなく app.py の位置を基準にする）
+    if not os.path.isabs(raw):
+        raw = os.path.join(project_root, raw.lstrip('./').lstrip('.\\'))
+    return raw
+
+DATABASE_PATH = _resolve_db_path()
+print(f"[DEBUG] DATABASE_PATH resolved: {DATABASE_PATH}")
 
 class MemoryManager:
     """AI短期記憶システムの管理クラス"""
@@ -570,7 +590,15 @@ class AIConversationManager:
         """Gemini APIを呼び出し"""
         try:
             response = model.generate_content(prompt)
-            return response.text
+            # response.text はセーフティフィルタブロック時に ValueError を raise するため安全にアクセス
+            try:
+                text = response.text
+            except ValueError as ve:
+                block_reason = getattr(getattr(response, 'prompt_feedback', None), 'block_reason', 'unknown')
+                raise Exception(f"Gemini response blocked (reason: {block_reason}): {ve}")
+            if not text or not text.strip():
+                raise Exception("Gemini returned empty response text")
+            return text
         except Exception as e:
             raise Exception(f"Gemini API error: {e}")
 
@@ -866,9 +894,11 @@ def register():
             return jsonify({'error': 'パスワードは6文字以上で入力してください'}), 400
         
         # ユーザー作成
+        # create_user は重複時 None を返し、システムエラー時は例外を raise する
         user_id = user_model.create_user(username, email, password)
         
-        if not user_id:
+        if user_id is None:
+            # IntegrityError (UNIQUE制約違反) = 重複ユーザー
             return jsonify({'error': 'このメールアドレスまたはユーザー名は既に使用されています'}), 409
         
         # トークン生成
@@ -1117,13 +1147,19 @@ def get_current_user(current_user):
 @app.route('/api/user/settings', methods=['GET'])
 @token_required
 def get_user_settings_endpoint(current_user):
-    """ユーザー設定を取得"""
+    """ユーザー設定を取得（存在しない場合はデフォルト設定を自動作成）"""
     try:
         settings = user_model.get_user_settings(current_user['user_id'])
-        
+        # get_user_settings は None を返さなくなったが、念のため防御
         if not settings:
-            return jsonify({'error': '設定が見つかりません'}), 404
-        
+            settings = {
+                'character': 'Shiro.vrm',
+                'background': 'sky.jpg',
+                'volume': 0.7,
+                'voiceSpeed': 1.0,
+                'memoryEnabled': True,
+                'use3DUI': True
+            }
         return jsonify({'settings': settings}), 200
         
     except Exception as e:
@@ -1468,7 +1504,8 @@ def handle_message(data):
     try:
         session_id = data.get('session_id', 'default')
         message = data.get('message', '')
-        personality = data.get('personality', 'yui_natural')
+        # デフォルトを 'shiro' に統一（フロントエンドと一致させる）
+        personality = data.get('personality') or 'shiro'
         user_id = data.get('user_id')  # 認証済みユーザーのID (オプション)
         
         if not message.strip():
@@ -1485,19 +1522,39 @@ def handle_message(data):
         logger.info(f"Generated prompt: {prompt}")
 
         # 2. Gemini API 呼び出し
+        def safe_get_text(response) -> Optional[str]:
+            """response.text を安全に取得する。ブロック・空レスポンスは None を返す"""
+            try:
+                text = response.text
+                return text if text and text.strip() else None
+            except ValueError as ve:
+                # セーフティフィルタによるブロック等
+                logger.warning(f"response.text access failed (possibly blocked): {ve}")
+                if hasattr(response, 'prompt_feedback'):
+                    logger.warning(f"Prompt feedback: {response.prompt_feedback}")
+                return None
+            except Exception as ve:
+                logger.warning(f"Unexpected error accessing response.text: {ve}")
+                return None
+
         try:
             ai_start_time = time.time()
             response = primary_model.generate_content(prompt)
-            response_text = response.text
+            response_text = safe_get_text(response)
+            if response_text is None:
+                raise ValueError("Primary model returned empty or blocked response")
             logger.info(f"Gemini response received: '{response_text}'")
             logger.info(f"[PERF] Gemini response time: {time.time() - ai_start_time:.2f}s")
         except Exception as e:
-            logger.error(f"Gemini API call failed: {e}")
+            logger.error(f"Gemini primary model failed: {e}")
             # フォールバックモデルを試行
             try:
                 logger.warning("Attempting to use fallback model.")
                 response = fallback_model.generate_content(prompt)
-                response_text = response.text
+                response_text = safe_get_text(response)
+                if response_text is None:
+                    raise ValueError("Fallback model returned empty or blocked response")
+                logger.info(f"Fallback model response received: '{response_text}'")
             except Exception as fallback_e:
                 logger.error(f"Fallback model also failed: {fallback_e}")
                 response_text = "ごめん！ちょっと喉の調子が悪くて、うまく声が出せないみたい！もう一回お願いしてもいい？"

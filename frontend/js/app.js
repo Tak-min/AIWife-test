@@ -1098,7 +1098,18 @@ class AIWifeApp {
     send3DMessage(message) {
         console.log('Sending 3D message:', message);
         console.log('Character personality:', this.settings.personality);
-        
+
+        if (!message || !message.trim()) {
+            console.warn('[Warning] send3DMessage called with empty message. Skipping.');
+            return;
+        }
+
+        if (!this.socket || !this.socket.connected) {
+            console.error('[Error] Socket is not connected. Cannot send message.');
+            this.showError('サーバーに接続できていません。ページを再読み込みしてください。');
+            return;
+        }
+
         // ユーザーがメッセージを送信した際はアイドルアニメーションを再生
         this.playAnimation('idle', { loop: true });
         
@@ -1111,12 +1122,12 @@ class AIWifeApp {
         const messageData = {
             session_id: this.sessionId,
             message: message,
-            voice_id: this.settings.voiceId,
-            personality: this.settings.personality
+            voice_id: this.settings.voiceId ?? null,
+            personality: this.settings.personality ?? 'shiro'
         };
         
-        // 認証済みの場合はuser_idを追加
-        if (this.isAuthenticated && this.currentUser) {
+        // 認証済みの場合はuser_idを追加（オプショナルチェーンで null アクセス防止）
+        if (this.isAuthenticated && this.currentUser?.id) {
             messageData.user_id = this.currentUser.id;
         }
         

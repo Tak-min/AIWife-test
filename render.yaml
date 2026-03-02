@@ -9,3 +9,14 @@ services:
         value: "3.11"
       - key: PYTHONPATH
         value: "/opt/render/project/src:$PYTHONPATH"
+    # NOTE: Render の無料プランはディスク永続化非対応のため /tmp/memory.db を使用する。
+    # 有料プラン (Starter 以上) で永続化する場合は以下のコメントを外し、
+    # DATABASE_PATH=/var/data/memory.db を env に追加すること。
+    #
+    # disk:
+    #   name: aiwife-db
+    #   mountPath: /var/data
+    #   sizeGB: 1
+    # envVars (追加):
+    #   - key: DATABASE_PATH
+    #     value: "/var/data/memory.db"
